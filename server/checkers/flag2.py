@@ -53,8 +53,25 @@ def _smooth(rows, idxs, max_accel_g=MAX_ACCEL_G):
 
 def judge_flag2(rows: List, cfg: Dict) -> Dict:
     vne_kias = cfg.get('vne_kias', VNE_KIAS)
-    out = {'total': 0.0, 'checkpoints': {}, 'verdict': 'FAIL', 'evidence': {}}
+    hb_last_ts = cfg.get('hb_last_ts', 0.0)
+    hb_grace_s = cfg.get('hb_grace_s', 5)
+    out = {
+        'total': 0.0, 'checkpoints': {}, 'verdict': 'FAIL', 'evidence': {},
+        'heartbeat_ok': False,
+    }
     if len(rows) < 2:
+        return out
+
+    # --- 心跳门控：必须全程有心跳 ---
+    last_row_ts = rows[-1].ts
+    hb_ok = (hb_last_ts > 0) and (last_row_ts - hb_last_ts <= hb_grace_s)
+    out['heartbeat_ok'] = hb_ok
+    out['evidence']['hb_last_ts'] = hb_last_ts
+    out['evidence']['hb_grace_s'] = hb_grace_s
+    out['evidence']['last_row_ts'] = last_row_ts
+
+    if not hb_ok:
+        out['verdict'] = 'FAIL (no heartbeat)'
         return out
     runs = {
         'soar': _best_run(rows, lambda r: (r.alt_ft or 0.0) > THRESHOLD['soar'][0]),

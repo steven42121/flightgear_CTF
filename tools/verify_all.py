@@ -112,12 +112,15 @@ def test_flag1(csv_path):
 def test_flag2(csv_path):
     print("== flag2 判决 (新格式：物理不可能状态) ==")
     rows = load_rows(csv_path)
-    f2cfg = RULES["flag2"]
+    f2cfg = dict(RULES["flag2"])
+    # 测试环境模拟：注入有效心跳（最后一行时间戳 = 心跳时间戳）
+    f2cfg["hb_last_ts"] = rows[-1].ts if rows else 0.0
+    f2cfg["hb_grace_s"] = RULES["session"]["grace_missed"]
     r2 = judge_flag2(rows, f2cfg)
     check("返回 total 字段", "total" in r2)
     check("返回 verdict 字段", "verdict" in r2)
     check("返回 checkpoints 字段", "checkpoints" in r2)
-    # 测试数据包含飞天/遁地/超速三段，应该全部通过
+    check("心跳门控通过", r2.get("heartbeat_ok", False))
     if r2["total"] > 0:
         check("得分 > 0", True, f"total={r2['total']:.1f}")
     else:

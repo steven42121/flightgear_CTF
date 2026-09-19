@@ -1,9 +1,7 @@
 """生成 env.lock 文件：计算关键目录的 SHA256 哈希清单。
 
 用法:
-    python -m tools.gen_envlock --fg-root C:/Users/steven/FlightGear/Downloads/fgdata_2024_1
-                                --scenery C:/Users/steven/FlightGear/Downloads/TerraSync
-                                --output build/env.lock
+    python -m tools.gen_envlock --fg-root /path/to/fgdata --output build/env.lock
 
 输出格式 (JSON):
 {
@@ -33,6 +31,9 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from tools.fg_detect import detect
+
 
 def sha256_file(filepath: Path) -> str:
     """计算单个文件的 SHA256。"""
@@ -58,22 +59,25 @@ def hash_directory(directory: Path, pattern: str = "*") -> Dict[str, str]:
     return result
 
 
-def get_fg_version(fg_root: Path) -> str:
+def get_fg_version(fg_root: Path, fg_bin: Path = None) -> str:
     """从 version 文件读取 FG 版本。"""
     version_file = fg_root / "version"
     if version_file.exists():
         return version_file.read_text().strip()
     # 尝试从二进制获取
-    try:
-        result = subprocess.run(
-            ["C:\\Program Files\\FlightGear 2024.1\\bin\\fgfs.exe", "--version"],
-            capture_output=True, text=True, timeout=10
-        )
-        for line in result.stdout.split('\n'):
-            if 'FlightGear version:' in line:
-                return line.split(':')[1].strip()
-    except:
-        pass
+    if fg_bin and fg_bin.is_dir():
+        exe = fg_bin / ("fgfs.exe" if sys.platform == "win32" else "fgfs")
+        if exe.is_file():
+            try:
+                result = subprocess.run(
+                    [str(exe), "--version"],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'FlightGear version:' in line:
+                        return line.split(':')[1].strip()
+            except Exception:
+                pass
     return "unknown"
 
 
@@ -149,28 +153,41 @@ def scan_fg_binaries(bin_dir: Path) -> Dict[str, str]:
 
 
 def main():
+    fg = detect()
+
     parser = argparse.ArgumentParser(description="生成 env.lock 哈希清单")
-    parser.add_argument("--fg-root", required=True, help="FGData 根目录")
-    parser.add_argument("--fg-bin", default=r"C:\Program Files\FlightGear 2024.1\bin",
-                       help="FG 二进制目录")
-    parser.add_argument("--scenery", default=None,
-                       help="Terrasync 地景目录（默认与 fg-root 同级）")
+    parser.add_argument("--fg-root", default=fg.data_root,
+                        help="FGData 根目录（默认自动检测）")
+    parser.add_argument("--fg-bin", default=fg.bin_dir,
+                        help="FG 二进制目录（默认自动检测）")
+    parser.add_argument("--scenery", default=fg.scenery_dir,
+                        help="Terrasync 地景目录（默认自动检测）")
     parser.add_argument("--output", default="build/env.lock", help="输出文件路径")
     parser.add_argument("--only-aircraft", action="store_true",
-                       help="只扫描机型（快速模式）")
+                        help="只扫描机型（快速模式）")
     args = parser.parse_args()
-    
+
+    if not args.fg_root:
+        print("ERROR: Cannot find FGData directory.", file=sys.stderr)
+        print("       Set FG_ROOT environment variable or use --fg-root.", file=sys.stderr)
+        sys.exit(1)
+    if not args.fg_bin:
+        print("ERROR: Cannot find FG binary directory.", file=sys.stderr)
+        print("       Set FG_BIN environment variable or use --fg-bin.", file=sys.stderr)
+        sys.exit(1)
+
     fg_root = Path(args.fg_root).resolve()
     fg_bin = Path(args.fg_bin).resolve()
-    
+
+    scenery_dir = None
     if args.scenery:
         scenery_dir = Path(args.scenery).resolve()
     else:
-        # 默认尝试 Terrasync
-        candidates = [
-            fg_root.parent / "TerraSync",
-            Path("C:/Users/steven/FlightGear/Downloads/TerraSync"),
-        ]
+        # 默认尝试 Terrasync：同级 TerraSync 或 $HOME/.fgfs/TerraSync
+        candidates = [fg_root.parent / "TerraSync"]
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+        if home:
+            candidates.append(Path(home) / ".fgfs" / "TerraSync")
         scenery_dir = next((d for d in candidates if d.exists()), None)
     
     print(f"FG_ROOT : {fg_root}")
@@ -183,7 +200,7 @@ def main():
     lock = {
         "format": "envlock-v1",
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "fg_version": get_fg_version(fg_root),
+        "fg_version": get_fg_version(fg_root, fg_bin),
     }
     
     # 1. FG 二进制哈希

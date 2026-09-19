@@ -1,4 +1,7 @@
-# 飞行模拟 CTF · 题解与裁判手册
+# -*- coding: utf-8 -*-
+import os
+
+ti_jie = """# 飞行模拟 CTF · 题解与裁判手册
 
 > **内部文档，禁止下发给参赛者**
 > 配套：`飞行模拟CTF-系统设计.md` · `飞行模拟CTF-开发计划.md` · `飞行模拟CTF-题面.md`
@@ -73,13 +76,7 @@ def generate_atc_audio(uid, flag_key):
     return audio_b64
 ```
 
-### 1.4 心跳要求
-
-**flag1 也需要心跳验证**。判决逻辑中会检查 `hb_ok`：
-- 有心跳 → 正常判决
-- 无心跳 → `reached=false`，无法获得 flag1
-
-### 1.5 反作弊关注点
+### 1.4 反作弊关注点
 
 - `/sim/freeze/*`、`/sim/time/speed-up` 被改 → 作废
 - 直接写 `/position/*`、`/velocities/*` → 作废
@@ -167,33 +164,6 @@ def _continuous_duration(frames, min_s):
 
 ---
 
-### 1.6 会话踢出机制
-
-当 `grace_missed`（默认 5 次）心跳中断后，poller 会关闭该 session：
-- 选手从连飞平台被踢出
-- 无法继续上传遥测数据
-- 已完成的成绩不受影响，但未完成的 flag 无法获得
-
-### 1.7 不运行 anticheatd 的后果
-
-```
-选手不跑 anticheatd
-        │
-        ▼
-FG 遥测 ──▶ poller 正常接收
-心跳 ──────▶ 空
-        │
-        ▼
-30s 后 session 关闭 → 踢出
-        │
-        ▼
-flag1/flag2 都无法获得
-```
-
-**结论**：反作弊程序是完成题目的必要条件，不是可选项。
-
----
-
 ## 3. 评分汇总
 
 | Flag | 内容 | 满分 | 判据类型 |
@@ -226,3 +196,8 @@ flag1/flag2 都无法获得
 **注意**：所有阈值需通过 P0 基线数据采集后校准，确保：
 - flag1 不难也不易（stock AP 能过但需一定技巧）
 - flag2 的物理不可能状态在正常飞行中绝不会出现
+"""
+
+with open(r'c:\Users\steven\Documents\HW\gkp2026\出题\flightgear-ctf\doc\飞行模拟CTF-题解与裁判手册.md', 'w', encoding='utf-8') as f:
+    f.write(ti_jie)
+print('题解与裁判手册.md written OK')

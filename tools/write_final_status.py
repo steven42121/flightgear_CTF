@@ -1,4 +1,6 @@
-# MAYDAY CTF 项目最终状态
+# -*- coding: utf-8 -*-
+
+final_status = """# MAYDAY CTF 项目最终状态
 
 > 更新时间：2026-09-20
 
@@ -134,7 +136,7 @@
 
 ```bash
 # 激活虚拟环境
-.\.venv\Scriptsctivate
+.\.venv\Scripts\activate
 
 # 运行全量自验
 python -m tools.verify_all
@@ -218,3 +220,8 @@ flightgear-ctf/
 | [UltimateAntiCheat](https://github.com/AlSch092/UltimateAntiCheat) | 架构设计参考 | AGPL |
 
 本项目代码为原创实现，仅参考上述项目的设计思路。
+"""
+
+with open(r'c:\Users\steven\Documents\HW\gkp2026\出题\flightgear-ctf\FINAL_STATUS.md', 'w', encoding='utf-8') as f:
+    f.write(final_status)
+print('FINAL_STATUS.md written OK')

@@ -1,4 +1,5 @@
-#include "L1_Integrity.hpp"
+# -*- coding: utf-8 -*-
+content = r'''#include "L1_Integrity.hpp"
 #include "Logger.hpp"
 #include "common.hpp"
 #include <fstream>
@@ -76,9 +77,6 @@ std::string L1_Integrity::compute_file_hash(const std::string& filepath) const {
 L1_Integrity::CheckResult L1_Integrity::verify(const std::string& fg_root,
                                                const std::string& fg_bin_dir,
                                                const std::string& scenery_dir) const {
-    (void)fg_root;
-    (void)scenery_dir;
-    
     CheckResult result;
     result.passed = true;
     
@@ -106,3 +104,8 @@ L1_Integrity::CheckResult L1_Integrity::verify(const std::string& fg_root,
                               std::to_string(result.issues.size()) + " issues found";
     return result;
 }
+'''
+
+with open(r'c:\Users\steven\Documents\HW\gkp2026\出题\flightgear-ctf\anticheatd\src\L1_Integrity.cpp', 'w', encoding='utf-8') as f:
+    f.write(content)
+print('L1_Integrity.cpp rewritten OK')

@@ -3,28 +3,41 @@
 #include <vector>
 
 /**
- * VM detection using VMAware techniques.
+ * 虚拟化检测：VM + VBS 双重检测。
  *
- * Covers CPUID, DMI/SMBIOS, MAC OUI, hypervisor brand, process names.
- * Based on https://github.com/NotRequiem/VMAware (MIT license).
+ * Phase 1 - VM 检测（传统 VM）：
+ *   CPUID / SMBIOS / MAC OUI / 注册表 / 进程名
+ *   识别 VMware / VirtualBox / QEMU-KVM / Hyper-V Guest / Parallels
  *
- * Detection items (cross-platform):
- *   - Windows: Registry keys (Win32_ComputerSystem, Win32_BIOS),
- *              process names (vmtoolsd, VBoxService, qemu-ga),
- *              CPUID hypervisor bit
- *   - Linux: /proc/cpuinfo hypervisor flag, DMI strings, /dev/kvm,
- *            process/service names
- *   - Network: MAC OUI prefixes (VMware 00:50:56, VirtualBox 08:00:27)
+ * Phase 2 - VBS 检测（裸金属上的 Hypervisor）：
+ *   当 CPUID HypervisorPresent=true 但非 VM 厂商时，判定为 VBS 开启：
+ *     - Memory Integrity (HVCI)
+ *     - Credential Guard
+ *     - Virtualization-Based Security
+ *   检出后提示：进入 BIOS 禁用 Virtualization Technology 或在
+ *   Windows 安全中心关闭"内核隔离-内存完整性"。
+ *
+ * Windows 检测项：
+ *   - Win32_ComputerSystem.HypervisorPresent
+ *   - Win32_ComputerSystem.Manufacturer（真实硬件厂商 ≠ VM 厂商）
+ *   - DeviceGuard HVCI 注册表
+ *   - LsaCfgFlags（Credential Guard）
+ *
+ * Linux：
+ *   - /proc/cpuinfo hypervisor flag
+ *   - DMI/SMBIOS 字符串
+ *   - /dev/kvm 存在
  */
 
 class VMDetector {
 public:
     struct VMDetectionResult {
-        bool vm_detected;
-        std::string vm_brand;       // "VMware", "VirtualBox", "QEMU/KVM", "Hyper-V", "Unknown"
+        bool vm_detected;            // VM 或 VBS 任一检出
+        bool vbs_detected;           // 单独标记 VBS（非 VM 的 hypervisor）
+        std::string vm_brand;        // "VMware", "VirtualBox", "Hyper-V", "VBS", etc.
         int techniques_used;
         std::vector<std::string> details;
-        std::string recommendation; // "BLOCK" or "ALLOW"
+        std::string recommendation;  // "BLOCK" / "DISABLE_VBS" / "ALLOW"
     };
 
     VMDetectionResult detect() const;
@@ -32,13 +45,13 @@ public:
     int percentage() const;
 
 private:
-#ifdef _WIN32
     VMDetectionResult detect_windows() const;
-#else
     VMDetectionResult detect_linux() const;
-#endif
 
     std::string detect_brand(const std::vector<std::string>& indicators) const;
     std::string read_file(const std::string& path) const;
     std::string exec_command(const std::string& cmd) const;
+
+    mutable std::string current_brand_;
+    mutable int current_percentage_;
 };

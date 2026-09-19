@@ -1,7 +1,7 @@
 # 飞行模拟 CTF 附加题 · 系统设计文档
 
-> 基于 FlightGear 的三段式附加题：连飞平台 + 本地反作弊 + 物理不可能状态判定
-> 版本 v1.0 · 面向出题组内部
+> 基于 FlightGear 的两段式附加题：上海短途飞行 + 物理不可能状态破解
+> 版本 v2.0 · 面向出题组内部（2026-09-20 更新）
 
 ---
 
@@ -20,7 +20,7 @@ AI 的天花板只有四条够不着的：物理世界、实时私有信息、�
 | 反 AI 支点 | 本方案如何落地 |
 |---|---|
 | **实时私有信息** | 服务端在飞行中随机注入 challenge（风向突变等），AI 不在场上，无法预知 |
-| **长时间注意力** | 一次进近 + 一次转场 + 一次逆向调试，全程数十分钟到数小时，AI 无法代跑 |
+| **长时间注意力** | 一次短途飞行 + 一次逆向调试，全程数十分钟，AI 无法代跑 |
 | **本地进程** | 反作弊是本机 native 进程，AI 够不着内存、够不着调试器会话 |
 | **服务端旁观** | 判决依据来自连飞平台观测到的轨迹，不是客户端自证 |
 
@@ -45,8 +45,8 @@ AI 的天花板只有四条够不着的：物理世界、实时私有信息、�
 │      · 运行时属性树审计（禁止写状态属性）                                   │
 │      · 进程完整性（fgfs/自身 .text CRC、maps 注入扫描）                     │
 │      · 反调试 / anti-VM                                                   │
-│      · 1Hz 心跳票据 HMAC(K, 状态流摘要 ‖ seq)  ──────┐                    │
-│                                                       │                  │
+│      · 1Hz 心跳票据 HMAC(K, seq‖timestamp)  ──────┐                       │
+│                                                       │                    │
 └───────────────────────────────────────────────────────┼──────────────────┘
                                                         │ 心跳 + 遥测
                                                         ▼
@@ -54,7 +54,8 @@ AI 的天花板只有四条够不着的：物理世界、实时私有信息、�
 │  · XDR/UDP MP 包解析（32B 头 + MsgId=7 位置消息）                        │
 │  · 权威时间戳 + 位置差分地速（不由客户端报告）                             │
 │  · 心跳验签、连续性检查、challenge 注入                                   │
-│  · 「物理不可能状态」判定                                                 │
+│  · flag1：到达上海张江判定 + 生成 ATC 语音                              │
+│  · flag2：物理不可能状态判定（飞天/遁地/超速）                             │
 │  · flag 下发：flagN = HMAC(K_server, userid ‖ checkpoint)                │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -69,35 +70,133 @@ AI 的天花板只有四条够不着的：物理世界、实时私有信息、�
 
 ## 3. 题目规格
 
-### 3.1 flag1 —— 完成进近
+### 3.1 flag1 —— 飞抵上海张江
 
-**题面**：从指定起始点起飞，在指定机场指定跑道完成 ILS 进近并安全落地。
+**题面**：从浦东国际机场 (ZSPD) 起飞，飞往上科大张江校区 (31.177°N, 121.596°E)，在目标点上方停留足够时长。
 
-**设计约束（已确认）**：**允许使用内置 AP**。这是预期行为，不会飞的人不应该被飞行手感卡住。考点不是驾驶技术。
+**触发条件**：
+- 进入目标点水平半径 **500m** 内
+- 气压高度低于 **1000 ft**
+- 连续持续 **≥ 5s**（防瞬移擦边）
 
-**判定属性**（全部可从属性树直接读取）：
+**抵达后**：
+- 服务器生成一段 ATC 语音（base64 编码的 WAV 文件），内容包含加密的 **flag key**
+- 选手需解码音频获得 key，提交到独立 Web 界面
+- Web 界面验证 key → 返回 flag1
 
-| 属性 | 用途 |
-|---|---|
-| `/instrumentation/nav[n]/heading-needle-deflection` | 航向道偏离 |
-| `/instrumentation/nav[n]/gs-needle-deflection-norm` | 下滑道偏离（归一化 -1~1） |
-| `/instrumentation/nav[n]/gs-distance` | 距跑道距离（米） |
-| `/velocities/vertical-speed-fps` | 接地垂直速度 |
-| `/orientation/roll-deg` | 坡度 |
-| `/position/altitude-agl-ft` | 离地高度（弹跳检测） |
+**设计要点**：
+- 这是短途飞行（约 20-30nm），使用 c172p 机型，允许内置自动驾驶
+- 考点不是飞行技术，而是"让 AI 无法代跑"——必须在真实 FG 环境中完成真实飞行
+- ATC 语音作为载体，增加 AI 逆向难度（语音解码本身是一个小挑战）
+- **心跳要求**：flag1 判决时也检查心跳，无心跳则 reached=false
 
-**建议判据（阈值必须用真人基线校准，见 PLAN §2）**
+### 3.1.5 心跳与会话管理
 
-- 距接地点 10nm 起，`|gs-needle-deflection-norm| < 0.3` 时间占比 ≥ 90%
-- 决断高度 200ft 前不得出现偏离 > 0.8（不稳定进近）
-- 接地瞬间：`|VS| < 150 fpm`、`|roll| < 5°`、横向偏中心 < 5m
-- 接地后 2s 内 `altitude-agl` 不得重新上升（无弹跳）
+**心跳是两道 flag 的共同前提**：
 
-**分档给分**：落地成功 40% / 稳定进近 30% / 接地品质 30%。让"飞得烂但飞下来了"的人拿部分分。
+| 场景 | flag1 | flag2 |
+|------|-------|-------|
+| 有心跳 | 正常判决 | 正常判决 |
+| 无心跳 | reached=false | hb_ok=false → FAIL |
+| 心跳中断≥5次 | session 关闭 → 踢出 | session 关闭 → 踢出 |
+
+**会话踢出逻辑**：
+```
+选手不跑 anticheatd
+        │
+        ▼
+FG 遥测 ──UDP:5000──▶ poller.py 正常收到，session 正常开
+                                         │
+anticheatd 心跳 ──UDP:5001──▶ 空          │
+                                         │
+        选手正常飞，30s 无遥测后 session 关闭
+                                         │
+                     ┌─ flag1 判决：hb_ok=false → ❌ 拿不到
+        verdict ─────┤
+                     └─ flag2 判决：hb_ok=false → ❌ 拿不到
+```
+
+> **结论：不下反作弊的选手，flag1/flag2 都拿不到。**
+
+### 3.2 flag2 —— 物理不可能状态（原 flag3）
+
+**题面**：在**默认 FDM（JSBSim）+ 反作弊正常运行**的前提下，让模拟器报出超出飞机结构极限的状态，并让反作弊为此签出真票。
+
+**三个检查点**（均要求**连续、平滑、持续**，防瞬移刷分）：
+
+| 名称 | 条件 | 持续 | 分值 |
+|---|---|---|---|
+| 飞天 | 气压高度 > 100,000 ft | ≥ 10 s | 33 pts |
+| 遁地 | `altitude-agl < -300 ft` | ≥ 10 s | 33 pts |
+| 超速 | 空速 > 3×VNE (163 kias) | ≥ 15 s | 34 pts |
+
+**计分规则**：达成 1 个 = 20 分，达成 2 个 = 50 分，达成 3 个 = 100 分。
+
+**难度真相**：物理不可能本身是廉价的。FlightGear 自带后门：
+- `--fdm=ufo` / `magic` / `null`：无物理约束的飞行模型
+- `--fdm=external` + `--native-fdm=socket,in,30,,5500,udp`：外部程序通过网络直接喂 FDM 状态
+
+> **结论：flag2 的难度 100% 在反作弊，物理只是皮。** 工作量必须投在反作弊上，不要投在物理场景上。
 
 ---
 
-### 3.2 flag2 —— 飞到某个地方
+## 4. 反作弊规格（本题核心）
+
+### 4.1 强制使用机制
+
+"使用我们自己的反作弊"不能靠自觉，靠耦合：
+
+```
+反作弊签发 session ticket  →  连飞平台要求 ticket 才接受注册
+                           →  没有 ticket = 上不了平台 = 两道题全部做不了
+```
+
+心跳中断/跳号/重复 → 整场会话作废。这样"绕过反作弊"的语义从**删文件**变成**逆向 + 内存攻防**。
+
+### 4.2 分层防护与对应攻击面
+
+| 层 | 攻击手段 | 检测方式 | 处置 |
+|---|---|---|---|
+| L0 | 换 `--fdm` / `--prop:` 覆盖 / `--load-tape` | 启动参数白名单、`/sim/fdm*` 校验、tape 未加载 | 拒绝启动 |
+| L1 | 改核心游戏文件（fgfs.exe、核心DLL） | **主要游戏文件** SHA256（fgfs.exe、关键DLL；不包含aircraft/set.xml和scenery地景） | 拒绝启动 |
+| L2 | telnet / generic 写状态属性 | 审计写入 `/position/*` `/velocities/*` `/orientation/*` `/sim/freeze/*` `/sim/time/speed-up` `/environment/*` | 告警 + 心跳染色 |
+| L3 | 自建外部 FDM 服务器喂假状态 | 启动参数 + 状态源可信度标记 | 心跳染色，不下发 flag2 |
+| L4 | 内存 patch / hook fgfs | fgfs `.text` CRC 自检、`/proc/self/maps` 扫 frida / LD_PRELOAD / 注入库 | 告警 |
+| L5 | 内存 patch 反作弊自身 | 自哈希 + 反调试 + 蜜罐分支 | 签出诱饵票据 |
+
+### 4.3 密钥与票据
+
+```
+K = KDF( hash(anticheatd .text)
+       ‖ hash(fgfs binary)
+       ‖ hash(aircraft data dir)
+       ‖ userid
+       ‖ session_nonce )
+```
+
+- K **只在内存中派生并存活，用完即擦**，静态反编译拿不到
+- 心跳：`HMAC(K, seq ‖ timestamp)`，1 Hz
+- **flag 生成用服务端的 `K_server`，不用 K**。否则挖出反作弊 key 就能直接算出 flag1/flag2，造成连带崩塌
+
+### 4.4 蜜罐分支（研究生难度的关键层）
+
+检测到调试器时**不崩溃、不报错**，改为走一条假分支，签出**诱饵票据**。
+
+后果：dump 内存只会拿到假 key。玩家必须静态分析定位检测点、精确 patch 掉、再让真分支在被调试状态下执行。这一步**不是问 AI 能问出来的**，必须坐在 IDA 前熬。
+
+### 4.5 anti-VM（"要求参赛者关闭虚拟化"）
+
+| 类别 | 检测项 |
+|---|---|
+| CPU | `CPUID.1:ECX[31]` hypervisor bit；leaf `0x40000000` hypervisor brand 字符串 |
+| Linux | `/proc/cpuinfo` 的 `hypervisor` flag；`dmesg` "Hypervisor detected"；`/dev/kvm` 存在性 |
+| 固件 | DMI/SMBIOS `/sys/class/dmi/id/{product_name,sys_vendor,bios_vendor}` 含 VMware/VirtualBox/QEMU/KVM |
+| 网络 | 网卡 MAC OUI（VMware `00:50:56` / `00:0C:29`、VirtualBox `08:00:27` 等） |
+| Windows | 注册表磁盘/显卡/系统名；驱动名；`Win32_BaseBoard` / `Win32_BIOS` / `Win32_ComputerSystem` Model |
+| 进程/服务 | `vmtoolsd` / `VBoxService` / `qemu-ga` 等 |
+| 时序 | `RDTSC` / `CPUID` 指令开销异常（VM 下陷入开销显著） |
+
+**误杀风险（必须提前处理）**：
 
 **题面**：给定有限线索，解算出目标点，飞抵其上方。
 
@@ -158,7 +257,7 @@ AI 的天花板只有四条够不着的：物理世界、实时私有信息、�
 | 层 | 攻击手段 | 检测方式 | 处置 |
 |---|---|---|---|
 | L0 | 换 `--fdm` / `--prop:` 覆盖 / `--load-tape` | 启动参数白名单、`/sim/fdm*` 校验、tape 未加载 | 拒绝启动 |
-| L1 | 改机型 XML（无阻力、超大推力） | 机型数据目录哈希 | 拒绝启动 |
+| L1 | 改核心游戏文件（fgfs.exe、核心DLL） | **主要游戏文件** SHA256（fgfs.exe、关键DLL；不包含aircraft/set.xml和scenery地景） | 拒绝启动 |
 | L2 | telnet / generic 写状态属性 | 审计写入 `/position/*` `/velocities/*` `/orientation/*` `/sim/freeze/*` `/sim/time/speed-up` `/environment/*` | 告警 + 心跳染色 |
 | L3 | 自建外部 FDM 服务器喂假状态 | 启动参数 + 状态源可信度标记 | 心跳染色，不下发 flag3 |
 | L4 | 内存 patch / hook fgfs | fgfs `.text` CRC 自检、`/proc/self/maps` 扫 frida / LD_PRELOAD / 注入库 | 告警 |
@@ -186,18 +285,27 @@ K = KDF( hash(anticheatd .text)
 
 ### 4.5 anti-VM（"要求参赛者关闭虚拟化"）
 
-| 类别 | 检测项 |
-|---|---|
-| CPU | `CPUID.1:ECX[31]` hypervisor bit；leaf `0x40000000` hypervisor brand 字符串 |
-| Linux | `/proc/cpuinfo` 的 `hypervisor` flag；`dmesg` "Hypervisor detected"；`/dev/kvm` 存在性 |
-| 固件 | DMI/SMBIOS `/sys/class/dmi/id/{product_name,sys_vendor,bios_vendor}` 含 VMware/VirtualBox/QEMU/KVM |
-| 网络 | 网卡 MAC OUI（VMware `00:50:56` / `00:0C:29`、VirtualBox `08:00:27` 等） |
-| 背板 | VMware I/O backdoor port `0x5658` |
-| Windows | 注册表磁盘/显卡/系统名；驱动名；`Win32_BaseBoard` / `Win32_BIOS` / `Win32_ComputerSystem` Model |
-| 进程/服务 | `vmtoolsd` / `VBoxService` / `qemu-ga` 等 |
-| 时序 | `RDTSC` / `CPUID` 指令开销异常（VM 下陷入开销显著） |
+**核心目标：确保选手在物理机上运行，禁用 Windows 虚拟化功能（VBS/Hyper-V）**
 
-**误杀风险（必须提前处理）**：
+| 类别 | 检测项 | 处置 |
+|---|---|---|
+| **VBS（核心）** | Windows 安全中心 → 设备安全性 → 核心隔离 → 内存完整性 | 检测到 VBS 开启 → 拒绝启动 |
+| **Hyper-V** | `bcdedit /get hypervisorlaunchtype`、注册表 `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\VirtualMachine` | 检测到 Hyper-V → 拒绝启动 |
+| CPU | `CPUID.1:ECX[31]` hypervisor bit；leaf `0x40000000` hypervisor brand 字符串 | 检测到 hypervisor → 告警 |
+| Windows | 注册表磁盘/显卡/系统名；驱动名；`Win32_BaseBoard` / `Win32_BIOS` / `Win32_ComputerSystem` Model | 检测到 VM 特征 → 告警 |
+| 网络 | 网卡 MAC OUI（VMware `00:50:56` / `00:0C:29`、VirtualBox `08:00:27` 等） | 检测到 VM MAC → 告警 |
+
+**Windows 用户必须执行的操作**：
+1. 关闭 VBS（核心隔离/内存完整性）：Windows 安全中心 → 设备安全性 → 核心隔离 → 内存完整性 → 关
+2. 关闭 Hyper-V：`bcdedit /set hypervisorlaunchtype off`（管理员权限，执行后重启）
+3. 关闭 WSL2：`wsl --shutdown`，`dism.exe /Online /Disable-Feature:Microsoft-Windows-Subsystem-Linux`
+4. 如上述步骤后仍被拦截，需在 BIOS 中关闭 VT-x / SVM
+
+> **注意**：部分杀毒软件与第三方反作弊自带虚拟化层。如遇拦截，请携带自检工具输出联系组委会，我们将人工判定是否放行。
+
+---
+
+## 5. 数据流与通信协议
 
 - Windows 启用 Hyper-V / WSL2 / Windows Sandbox 时，**宿主本身** CPUID 会置 hypervisor bit
 - Credential Guard、Device Guard、核心隔离（内存完整性 / VBS）同样基于虚拟化

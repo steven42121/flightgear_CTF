@@ -1,11 +1,25 @@
 #pragma once
+
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#pragma warning(disable: 4996)
+#endif
+
 #include <string>
 #include <vector>
 #include <sstream>
 #include <iomanip>
 #include <cstdint>
 
+#include "obfuscate.hpp"
+
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _WINSOCKAPI_
+#define _WINSOCKAPI_   // Prevent windows.h from pulling in winsock.h
+#endif
 #include <windows.h>
 #include <bcrypt.h>
 #else
@@ -20,14 +34,19 @@ inline std::string sha256(const std::string& data) {
     std::string result(64, '0');
     
 #ifdef _WIN32
-    HBCRYPT hash = nullptr;
-    HCSPROV prov = nullptr;
     BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    BYTE hashResult[32] = {};
     
     BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    BCryptHashData(alg, (BYTE*)data.c_str(), data.size(), 0);
-    BCryptFinishHash(alg, (BYTE*)result.data(), 64, 0);
+    BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0);
+    BCryptHashData(hash, (BYTE*)data.c_str(), (ULONG)data.size(), 0);
+    BCryptFinishHash(hash, hashResult, sizeof(hashResult), 0);
+    BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(alg, 0);
+    
+    for (int i = 0; i < 32; ++i)
+        sprintf(&result[i * 2], "%02x", hashResult[i]);
 #else
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int hash_len = 0;
@@ -51,17 +70,23 @@ inline std::string hmac_sha256(const std::string& key, const std::string& messag
     std::string result(64, '0');
     
 #ifdef _WIN32
-    HBCRYPT key_handle = nullptr;
-    BCryptCreateHash(BCRYPT_SHA256_ALGORITHM, 
-                     (BYTE*)key.c_str(), key.size(), 
-                     nullptr, 0, 0, &key_handle);
-    BCryptHashData(key_handle, (BYTE*)message.c_str(), message.size(), 0);
-    BCryptFinishHash(key_handle, (BYTE*)result.data(), 64, 0);
-    BCryptDestroyHash(key_handle);
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    BYTE hashResult[32] = {};
+    
+    BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    BCryptCreateHash(alg, &hash, nullptr, 0, (BYTE*)key.c_str(), (ULONG)key.size(), 0);
+    BCryptHashData(hash, (BYTE*)message.c_str(), (ULONG)message.size(), 0);
+    BCryptFinishHash(hash, hashResult, sizeof(hashResult), 0);
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    
+    for (int i = 0; i < 32; ++i)
+        sprintf(&result[i * 2], "%02x", hashResult[i]);
 #else
     unsigned char* mac = HMAC(EVP_sha256(), 
-                              key.c_str(), key.size(),
-                              (const unsigned char*)message.c_str(), message.size(),
+                              key.c_str(), (int)key.size(),
+                              (const unsigned char*)message.c_str(), (int)message.size(),
                               nullptr, nullptr);
     if (mac) {
         for (int i = 0; i < 32; ++i)

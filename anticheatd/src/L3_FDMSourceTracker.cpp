@@ -3,6 +3,7 @@
 void L3_FDMSourceTracker::register_session(const std::string& sid, 
                                            const std::string& source,
                                            const std::string& addr) {
+    (void)addr;
     sessions_[sid] = (source == "mp" || source == "fdm");
 }
 
@@ -13,5 +14,6 @@ bool L3_FDMSourceTracker::is_trusted(const std::string& sid) const {
 
 void L3_FDMSourceTracker::mark_anomaly(const std::string& sid, 
                                        const std::string& anomaly) {
+    (void)anomaly;
     sessions_[sid] = false;
 }

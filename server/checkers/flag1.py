@@ -9,11 +9,14 @@
 """
 import math
 import base64
-import hashlib
-import time
-from typing import List, Tuple, Optional, Dict
+import os
+from typing import List, Dict
 
 from .. import geodesy
+
+# 固定的 flag key（通过 ATC 语音的摩斯密码部分解码得到）
+FLAG_KEY = "LETS_FLY_TO_THE_SKY_THANK_YOU_FOR_FLYING"
+ATC_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "..", "atc_full.wav")
 
 
 def judge_flag1(rows: List, cfg: Dict) -> Dict:
@@ -94,17 +97,33 @@ def judge_flag1(rows: List, cfg: Dict) -> Dict:
     if reached:
         res["total"] = 100.0
         res["reached"] = True
-        # 生成ATC语音（实际部署时应为预录制的音频）
-        # 这里简化处理：生成一个包含flag key的base64编码音频占位符
-        flag_key = hashlib.sha256(
-            f"{cfg.get('userid', 'unknown')}|flag1|{int(time.time())}".encode()
-        ).hexdigest()[:32]
-        # 模拟base64编码的音频数据
-        audio_content = f"ATC: Welcome to Shanghai University of Science and Technology. Your code is: {flag_key}"
-        res["atc_audio"] = base64.b64encode(audio_content.encode()).decode()
-        res["evidence"]["flag_key_hint"] = flag_key[:8] + "..."  # 只显示前缀
+        
+        # 读取并编码音频文件
+        if os.path.exists(ATC_AUDIO_PATH):
+            with open(ATC_AUDIO_PATH, "rb") as f:
+                audio_data = f.read()
+            res["atc_audio"] = base64.b64encode(audio_data).decode("utf-8")
+        else:
+            # 降级：返回空音频
+            res["evidence"]["warning"] = "ATC audio file not found"
+        
+        # 记录 flag key 提示（只显示前8位）
+        res["evidence"]["flag_key_hint"] = FLAG_KEY[:8] + "..."
     
     return res
+
+
+def verify_flag1_key(submitted_key: str) -> bool:
+    """
+    验证选手提交的 flag key 是否正确
+    
+    参数:
+        submitted_key: 选手提交的 key
+    
+    返回:
+        bool: 是否正确
+    """
+    return submitted_key.strip().upper() == FLAG_KEY.upper()
     res["approach"] += 25.0 * (stable >= cfg["stable_ratio_min"])
 
     dec = [r for r in seg

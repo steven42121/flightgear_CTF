@@ -1,163 +1,100 @@
+﻿/**
+ * L5: HMAC heartbeat with obfuscated key.
+ *
+ * K → compiled as 8 XOR'd uint32_t fragments (see hb_secret.cpp).
+ * ticket = HMAC-SHA256(K, "seq|callsign|ts") → 64 hex chars.
+ *
+ * Server verifies: HMAC correct + seq monotonically increasing.
+ */
 #include "L5_Heartbeat.hpp"
 #include "Logger.hpp"
-#include <random>
+#include "common.hpp"
 #include <chrono>
+#include <sstream>
+#include <iomanip>
 
-HeartbeatTicket::HeartbeatTicket(const std::string& anticheat_hash,
-                                 const std::string& fgfs_hash,
-                                 const std::string& aircraft_hash,
-                                 const std::string& userid,
-                                 const std::string& nonce)
-    : anticheat_hash_(anticheat_hash), fgfs_hash_(fgfs_hash),
-      aircraft_hash_(aircraft_hash), userid_(userid), nonce_(nonce),
-      last_check_ms_(std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count()) {
-    // Generate random session ID
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<> dis(0, 0xFFFFFFFF);
-    
-    session_id_ = "";
-    for (int i = 0; i < 32; ++i) {
-        session_id_ += std::to_string(dis(gen));
-    }
-    session_id_ = session_id_.substr(0, 32);
+// ═══════════════════════════════════════════════════════════════════
+// CONSTRUCTOR
+// ═══════════════════════════════════════════════════════════════════
+
+HeartbeatTicket::HeartbeatTicket(const std::string& callsign,
+                                 const std::string& /*unused*/)
+    : callsign_(callsign), seq_(0), last_ok_ms_(now_ms()) {
+    JUNK_MATH();
 }
 
-std::string HeartbeatTicket::derive_key() const {
-    std::string material = anticheat_hash_ + fgfs_hash_ + aircraft_hash_ + userid_ + nonce_;
-    return sha256(material);
+HeartbeatTicket::~HeartbeatTicket() {
+    JUNK_MATH();
 }
 
-std::string HeartbeatTicket::make_message(int seq, long long ts) const {
-    return std::to_string(seq) + ":" + std::to_string(ts);
-}
+// ═══════════════════════════════════════════════════════════════════
+// TICKET SIGNING
+// ═══════════════════════════════════════════════════════════════════
 
 std::string HeartbeatTicket::sign() {
-    std::string key = derive_key();
-    auto now = std::chrono::system_clock::now();
-    long long ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
-    
-    std::string message = make_message(seq_, ts);
-    std::string sig = hmac_sha256(key, message);
-    
-    ++seq_;
-    last_check_ms_ = ts;
-    missed_heartbeats_ = 0;
-    
-    Logger::debug("Signed ticket seq=" + std::to_string(seq_ - 1) + 
-                  " sig=" + sig.substr(0, 16) + "...");
-    
-    // Return as simple JSON
-    return "{\"seq\":" + std::to_string(seq_ - 1) + 
-           ",\"ts\":" + std::to_string(ts) + 
-           ",\"sig\":\"" + sig + 
-           "\",\"session\":\"" + session_id_ + "\"}";
+    GUARD_BLOCK();
+
+    // 1) Assemble key from fragments → zero after use
+    uint8_t key[32];
+    g_secret_key.assemble(key);
+
+    // 2) Build message
+    std::ostringstream msg;
+    msg << seq_ << '|' << callsign_ << '|' << std::fixed << std::setprecision(3)
+        << static_cast<double>(now_ms()) / 1000.0;
+    std::string msg_str = msg.str();
+
+    // 3) HMAC-SHA256(key, msg)
+    std::string ticket = ::hmac_sha256(
+        std::string(reinterpret_cast<char*>(key), 32), msg_str);
+
+    // 4) Zero the key stack copy
+    ObfuscatedKey::zero(key);
+
+    // 5) Build JSON output
+    std::ostringstream json;
+    json << "{\"" << OBFSTR("callsign") << "\":\"" << callsign_ << "\","
+         << "\"" << OBFSTR("seq") << "\":" << seq_ << ","
+         << "\"" << OBFSTR("ts") << "\":" << std::fixed << std::setprecision(3)
+         << static_cast<double>(now_ms()) / 1000.0 << ","
+         << "\"" << OBFSTR("ticket") << "\":\"" << ticket << "\"}";
+
+    seq_++;
+    last_ok_ms_ = now_ms();
+    _guard_check();  // stack canary
+    JUNK_MATH();
+    return json.str();
 }
 
-bool HeartbeatTicket::verify(const std::string& ticket_json) {
-    // Simple parsing - extract seq and ts from JSON
-    size_t seq_pos = ticket_json.find("\"seq\":");
-    size_t ts_pos = ticket_json.find("\"ts\":");
-    size_t sig_pos = ticket_json.find("\"sig\":\"");
-    
-    if (seq_pos == std::string::npos || ts_pos == std::string::npos || 
-        sig_pos == std::string::npos) {
-        Logger::error("Invalid ticket format");
-        return false;
-    }
-    
-    // Extract values (simplified parsing)
-    int ticket_seq = std::stoi(ticket_json.substr(seq_pos + 6));
-    long long ticket_ts = std::stoll(ticket_json.substr(ts_pos + 5));
-    size_t sig_end = ticket_json.find('"', sig_pos + 7);
-    std::string ticket_sig = ticket_json.substr(sig_pos + 7, sig_end - sig_pos - 7);
-    
-    // Verify sequence
-    if (ticket_seq != seq_ - 1) {
-        Logger::warn("Sequence mismatch: expected " + std::to_string(seq_ - 1) + 
-                     " got " + std::to_string(ticket_seq));
-        return false;
-    }
-    
-    // Verify signature
-    std::string key = derive_key();
-    std::string message = make_message(ticket_seq, ticket_ts);
-    std::string expected_sig = hmac_sha256(key, message);
-    
-    return expected_sig == ticket_sig;
-}
+// ═══════════════════════════════════════════════════════════════════
+// LIVENESS CHECK
+// ═══════════════════════════════════════════════════════════════════
 
-bool HeartbeatTicket::check_liveness() const {
-    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    
-    if (now - last_check_ms_ > 2000) {  // 2 seconds
-        ++missed_heartbeats_;
-        if (missed_heartbeats_ >= 5) {
-            Logger::warn("Session missed " + std::to_string(missed_heartbeats_) + 
-                        " heartbeats");
-            return false;
-        }
+bool HeartbeatTicket::check_liveness() {
+    long long now = now_ms();
+    long long delta = now - last_ok_ms_;
+
+    // Miss threshold: 5000ms
+    if (delta > 5000) {
+        missed_++;
+        JUNK_MATH();
+        return false;
     }
+    missed_ = 0;
     return true;
 }
 
-// SessionManager implementation
+// ═══════════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════════
 
-std::string SessionManager::open_session(const std::string& userid,
-                                         const std::string& anticheat_hash,
-                                         const std::string& fgfs_hash,
-                                         const std::string& aircraft_hash) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    
-    std::string sid = "";
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<> dis(0, 0xFFFFFFFF);
-    
-    for (int i = 0; i < 32; ++i) {
-        sid += std::to_string(dis(gen));
-    }
-    sid = sid.substr(0, 32);
-    
-    sessions_[sid] = HeartbeatTicket(anticheat_hash, fgfs_hash, aircraft_hash, userid);
-    Logger::info("Opened session: " + sid.substr(0, 8) + "...");
-    
-    return sid;
+long long HeartbeatTicket::now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-bool SessionManager::receive_ticket(const std::string& sid, 
-                                    const std::string& ticket_json) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    
-    auto it = sessions_.find(sid);
-    if (it == sessions_.end()) {
-        Logger::error("Unknown session: " + sid);
-        return false;
-    }
-    
-    return it->second.verify(ticket_json);
-}
+int HeartbeatTicket::seq() const { return seq_; }
 
-std::vector<std::string> SessionManager::active_sessions() const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<std::string> sids;
-    for (const auto& [sid, _] : sessions_) {
-        sids.push_back(sid);
-    }
-    return sids;
-}
+const std::string& HeartbeatTicket::callsign() const { return callsign_; }
 
-std::vector<std::pair<std::string, bool>> SessionManager::check_heartbeats() {
-    std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<std::pair<std::string, bool>> results;
-    
-    for (auto& [sid, ticket] : sessions_) {
-        bool alive = ticket.check_liveness();
-        results.emplace_back(sid, alive);
-    }
-    
-    return results;
-}
+int HeartbeatTicket::missed() const { return missed_; }

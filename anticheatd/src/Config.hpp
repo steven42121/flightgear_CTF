@@ -24,7 +24,7 @@ public:
     
     // Flags
     bool enable_logging = true;
-    std::string log_file = "build/anticheat.log";
+    std::string log_file = "anticheatd.log";
     
     // Load from JSON config file
     bool load(const std::string& path);

@@ -39,7 +39,6 @@ class L1_Integrity;
 class L2_PropertyAudit;
 class L3_FDMSourceTracker;
 class L4_ProcessIntegrity;
-class L5_Heartbeat;
 class VMDetector;
 
 enum class DaemonMode {
@@ -68,6 +67,12 @@ public:
     int run(DaemonMode mode, const std::vector<std::string>& args,
             const std::string& userid = "");
 
+    // Enable JSON output mode (suppresses text report)
+    void set_json_mode(bool on);
+
+    // Print JSON report (for GUI integration)
+    void print_json_report();
+
 private:
     // L0-L5 checks
     CheckResult check_L0(const std::vector<std::string>& args);
@@ -78,7 +83,7 @@ private:
 
     // Heartbeat
     void start_heartbeat(const std::string& userid);
-    void heartbeat_loop();
+    void heartbeat_loop(const std::string& userid);
     void stop();
 
     // Report
@@ -93,9 +98,9 @@ private:
     std::unique_ptr<L3_FDMSourceTracker> l3_;
     std::unique_ptr<L4_ProcessIntegrity> l4_;
     std::unique_ptr<VMDetector> vm_;
-    std::unique_ptr<L5_Heartbeat> l5_;
-
     std::atomic<bool> running_{false};
     std::thread heartbeat_thread_;
     std::string session_id_;
+    std::vector<CheckResult> last_results_;  // Stored for JSON output
+    bool json_mode_ = false;                  // Suppress text report when true
 };

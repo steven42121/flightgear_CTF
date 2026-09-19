@@ -16,6 +16,7 @@
 #include "AntiCheatDaemon.hpp"
 #include "Config.hpp"
 #include "Logger.hpp"
+#include "FGDetector.hpp"
 
 namespace fs = std::filesystem;
 
@@ -24,6 +25,7 @@ void print_usage(const char* prog) {
               << "Usage: " << prog << " [OPTIONS]\n\n"
               << "Options:\n"
               << "  --mode <daemon|check|session|selfcheck>\n"
+              << "  --json                     Output results as JSON (requires selfcheck/check)\n"
               << "  --config <path>          Config file (JSON)\n"
               << "  --userid <name>          User ID for session mode\n"
               << "  --fg-root <path>         FGData root directory\n"
@@ -40,6 +42,7 @@ int main(int argc, char* argv[]) {
     std::string mode = "selfcheck";
     std::string userid;
     std::vector<std::string> args;
+    bool json_output = false;
     
     // Parse command line
     for (int i = 1; i < argc; ++i) {
@@ -49,6 +52,8 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--mode" && i + 1 < argc) {
             mode = argv[++i];
+        } else if (arg == "--json") {
+            json_output = true;
         } else if (arg == "--config" && i + 1 < argc) {
             cfg.config_path = argv[++i];
         } else if (arg == "--userid" && i + 1 < argc) {
@@ -75,43 +80,39 @@ int main(int argc, char* argv[]) {
         cfg.load(cfg.config_path);
     }
     
-    // Set defaults
-    if (cfg.fg_root.empty()) {
-#ifdef _WIN32
-        cfg.fg_root = "C:/Users/steven/FlightGear/Downloads/fgdata_2024_1";
-#else
-        cfg.fg_root = "/usr/share/games/flightgear";
-#endif
-    }
-    if (cfg.fg_bin_dir.empty()) {
-#ifdef _WIN32
-        cfg.fg_bin_dir = "C:/Program Files/FlightGear 2024.1/bin";
-#else
-        cfg.fg_bin_dir = "/opt/flightgear/bin";
-#endif
-    }
-    if (cfg.scenery_dir.empty()) {
-#ifdef _WIN32
-        cfg.scenery_dir = "C:/Users/steven/FlightGear/Downloads/TerraSync";
-#else
-        cfg.scenery_dir = "/opt/fg-scenery-preloaded";
-#endif
-    }
+    // Auto-detect FG locations if not set by CLI or config
+    auto fg = fg_detect::detect();
+    if (cfg.fg_root.empty())       cfg.fg_root      = fg.data_root;
+    if (cfg.fg_bin_dir.empty())    cfg.fg_bin_dir    = fg.bin_dir;
+    if (cfg.scenery_dir.empty())   cfg.scenery_dir   = fg.scenery_dir;
     if (cfg.lock_file.empty()) {
-        cfg.lock_file = fs::path(argv[0]).parent_path() / "env.lock";
+        // Default: look for env.lock next to the anticheatd binary
+        cfg.lock_file = (fs::path(argv[0]).parent_path() / "env.lock").string();
     }
-    
+
     try {
         AntiCheatDaemon daemon(cfg);
-        return daemon.run(
-            mode == "daemon" ? DAEMON :
-            mode == "check" ? CHECK :
-            mode == "session" ? SESSION : SELF_CHECK,
+        if (json_output) {
+            daemon.set_json_mode(true);
+        }
+        int ret = daemon.run(
+            mode == "daemon" ? DaemonMode::DAEMON :
+            mode == "check" ? DaemonMode::CHECK :
+            mode == "session" ? DaemonMode::SESSION : DaemonMode::SELF_CHECK,
             args,
             userid
         );
+        // Always output JSON when requested (success or failure)
+        if (json_output) {
+            daemon.print_json_report();
+        }
+        return ret;
     } catch (const std::exception& e) {
-        std::cerr << "ERROR: " << e.what() << std::endl;
+        if (json_output) {
+            std::cout << "{\"error\":\"" << e.what() << "\"}" << std::endl;
+        } else {
+            std::cerr << "ERROR: " << e.what() << std::endl;
+        }
         return 1;
     }
 }

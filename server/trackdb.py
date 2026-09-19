@@ -82,3 +82,10 @@ class TrackDB:
     def active_sessions(self):
         cur = self.conn.execute("SELECT id, callsign FROM sessions WHERE closed=0")
         return cur.fetchall()
+
+    def last_ts(self, sid: str):
+        """获取指定会话最后一帧的时间戳，无数据返回 0。"""
+        cur = self.conn.execute(
+            "SELECT ts FROM track WHERE sid=? ORDER BY ts DESC LIMIT 1", (sid,))
+        row = cur.fetchone()
+        return row[0] if row else 0.0

@@ -40,6 +40,9 @@ set(SOURCES
     src/SessionManager.cpp
     src/Logger.cpp
     src/Config.cpp
+    src/hb_secret.cpp
+    src/anti_debug.cpp
+    src/FGDetector.cpp
 )
 
 set(HEADERS
@@ -55,6 +58,8 @@ set(HEADERS
     src/Logger.hpp
     src/Config.hpp
     src/common.hpp
+    src/FGDetector.hpp
+    ${VMAWARE_PATH}/vmaware.hpp
 )
 
 # ─── Executable ───
@@ -70,9 +75,31 @@ target_link_libraries(anticheatd PRIVATE ${CRYPTO_LIBS})
 # Platform-specific flags
 if(WIN32)
     target_compile_definitions(anticheatd PRIVATE _WIN32_WINNT=0x0A00)
-    target_compile_options(anticheatd PRIVATE /W4 /WX)
+    target_compile_options(anticheatd PRIVATE /W4 /WX /utf-8)
+    
+    # ─── Obfuscation compiler flags ───
+    target_compile_options(anticheatd PRIVATE
+        /O2           # Max optimization (defeats simple decompilation)
+        /Ob2          # Aggressive inlining
+        /Oi           # Intrinsic functions
+        /GS-          # Disable buffer security check (reduces CRTsig)
+        /Gy           # Function-level linking
+        /GL           # Whole program optimization
+    )
+    
+    # ─── Obfuscation linker flags ───
+    target_link_options(anticheatd PRIVATE
+        /LTCG         # Link-time code generation
+        /OPT:REF      # Remove unreferenced code
+        /OPT:ICF      # Fold identical COMDATs
+        /DEBUG:NONE   # No PDB in Release
+        /PDBSTRIPPED:NONE
+    )
 elseif(UNIX)
-    target_compile_options(anticheatd PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(anticheatd PRIVATE -Wall -Wextra -Wpedantic
+        -O2 -fomit-frame-pointer -fno-asynchronous-unwind-tables
+        -Wl,--strip-all -Wl,--gc-sections
+    )
 endif()
 
 # ─── Install ───

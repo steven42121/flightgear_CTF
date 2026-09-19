@@ -2,14 +2,16 @@
 
     python -m server.poller --db /tmp/ctf.db --rules server/rules.yaml
 
-监听三条链路（独立端口，互不阻塞）：
+监听四条链路（独立端口，互不阻塞）：
 - UDP 5000：multiplay 位置包（MsgId=7），callsign 取自 MP 头 → 会话归属
 - UDP 3001：FG 原生 FDM 帧（--native-fdm 同款 408B），会话按来源地址归属
 - TCP 3002：demo 文本行 `CS:<callsign>|<ts>,...`（测试辅助）
+- UDP 5001：anticheatd 心跳（HMAC 票据，防重放）
 
 静默 close_idle_s 的会话收口判决，verdict 打印到 stdout。
 """
 import argparse
+import json
 import select
 import socket
 import sys
@@ -25,6 +27,7 @@ from server.rules_loader import load_rules  # noqa: E402
 from server.trackdb import TrackDB     # noqa: E402
 from server.trackrow import TrackRow   # noqa: E402
 from server.verdict import poll_sessions  # noqa: E402
+from server import hb_auth               # noqa: E402
 
 
 def row_from_mp(pkt):
@@ -48,14 +51,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=":memory:")
     ap.add_argument("--rules", default=str(REPO / "server" / "rules.yaml"))
+    ap.add_argument("--hb-key", default=str(REPO / "server" / "hb_secret.key"))
     ap.add_argument("--mp-port", type=int, default=5000)
     ap.add_argument("--fdm-port", type=int, default=3001)
     ap.add_argument("--text-port", type=int, default=3002)
+    ap.add_argument("--hb-port", type=int, default=5001)
     ap.add_argument("--poll-interval", type=float, default=5.0)
     args = ap.parse_args()
 
     rules = load_rules(args.rules)
     db = TrackDB(args.db)
+
+    # 初始化心跳认证
+    try:
+        secret = hb_auth.load_secret_key(args.hb_key)
+        print(f"[poller] HB secret key loaded ({len(secret)*8} bit)")
+    except FileNotFoundError:
+        # 密钥文件不存在时降级为 dummy key（自验/开发用）
+        secret = b"\x00" * 32
+        print(f"[poller] HB WARNING: secret key not found ({args.hb_key}), "
+              f"using dummy key (DEV ONLY)")
+    hba = {
+        "secret": secret,
+        "state": {},  # callsign → {"last_seq": int, "last_ts": float}
+    }
+
     sessions = {}   # 会话归属 key → sid
 
     sock_mp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -72,14 +92,20 @@ def main():
     srv.listen(8)
     srv.setblocking(False)
 
+    sock_hb = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_hb.bind(("0.0.0.0", args.hb_port))
+    sock_hb.setblocking(False)
+
     clients = {}    # text socket → 缓冲
+    heartbeats = {}  # callsign → last_heartbeat_ts（服务端心跳门控）
     print(f"[poller] MP-UDP:{args.mp_port} FDM-UDP:{args.fdm_port} "
+          f"HB-UDP:{args.hb_port} "
           f"TEXT-TCP:{args.text_port} db={args.db}")
 
     next_poll = time.time() + args.poll_interval
     while True:
         timeout = max(0.05, min(1.0, next_poll - time.time()))
-        readable, _, _ = select.select([srv, sock_mp, sock_fdm] + list(clients),
+        readable, _, _ = select.select([srv, sock_mp, sock_fdm, sock_hb] + list(clients),
                                        [], [], timeout)
         for s in readable:
             if s is srv:
@@ -90,12 +116,41 @@ def main():
                 _pump_mp(db, sessions, sock_mp)
             elif s is sock_fdm:
                 _pump_fdm(db, sessions, sock_fdm)
+            elif s is sock_hb:
+                _pump_hb(hba, heartbeats, sessions, sock_hb)
             else:
                 _pump_text(db, sessions, clients, s)
 
         if time.time() >= next_poll:
             next_poll = time.time() + args.poll_interval
-            _report(db, rules)
+            _report(db, rules, heartbeats)
+
+
+def _pump_hb(hba, heartbeats, sessions, sock):
+    """接收 anticheatd 心跳包，验证 HMAC 票据后记录。
+
+    格式: {"callsign":"MAYDAY01","seq":42,"ts":1.234e9,"ticket":"<64 hex>"}
+    验证: HMAC 正确 + seq 单调递增 + ts 在时间窗口内。
+    通过后才更新 heartbeats[callsign] = ts。
+    """
+    while True:
+        try:
+            data, _addr = sock.recvfrom(2048)
+        except BlockingIOError:
+            break
+        result = hb_auth.verify_heartbeat(data, hba["secret"], hba["state"])
+        if result:
+            cs = result["callsign"]
+            heartbeats[cs] = result["ts"]
+            # 静默记录，减少日志噪音（调试时可打开）
+            # print(f"[poller] HB ok: {cs} seq={result['seq']}")
+        else:
+            # 票据验证失败 — 可能是抓包重放攻击
+            try:
+                raw = json.loads(data.decode("utf-8", errors="replace"))
+                print(f"[poller] HB REJECT: {raw.get('callsign','?')} (bad ticket)")
+            except Exception:
+                print("[poller] HB REJECT: malformed")
 
 
 def _pump_mp(db, sessions, sock):
@@ -156,14 +211,15 @@ def _pump_text(db, sessions, clients, s):
         db.touch(sid, f["ts"])
 
 
-def _report(db, rules):
-    for res in poll_sessions(db, rules):
+def _report(db, rules, heartbeats):
+    for res in poll_sessions(db, rules, heartbeats):
         r1 = res["results"]["flag1"]
         r2 = res["results"]["flag2"]
-        r3 = res["results"]["flag3"]
-        print(f"[poller] VERDICT {res['uid']}: flag1={r1['total']:.0f} "
-              f"flag2={r2['ok']} flag3={r3['score']:.0f}")
-        for k in ("flag1", "flag2", "flag3"):
+        print(f"[poller] VERDICT {res['uid']}: "
+              f"flag1={r1['total']:.0f} "
+              f"flag2={r2['total']:.0f} "
+              f"hb1={r1.get('heartbeat_ok','-')} hb2={r2.get('heartbeat_ok','-')}")
+        for k in ("flag1", "flag2"):
             if res.get(k):
                 print(f"[poller]   {k} → {res[k]}")
 

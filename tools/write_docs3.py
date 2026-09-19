@@ -1,4 +1,7 @@
-# 飞行模拟 CTF 附加题 · 开发计划
+# -*- coding: utf-8 -*-
+import os
+
+kaifa_jihua = """# 飞行模拟 CTF 附加题 · 开发计划
 
 > 配套文档：`飞行模拟CTF-系统设计.md`
 > 版本 v2.0 · 面向出题组内部（2026-09-20 更新）
@@ -205,3 +208,8 @@ K = KDF( hash(anticheatd .text) ‖ hash(fgfs) ‖ hash(aircraft data) ‖ useri
 | 3 | 判据阈值不合适 | 全员零分或全员满分 | P0 基线数据采集 + 开赛前试飞 |
 | 4 | FG 版本更新破坏兼容性 | 环境不一致 | 锁定版本 + env.lock 校验 |
 | 5 | 选手集体作弊 | 题目失效 | 蜜罐分支 + 多重检测层 |
+"""
+
+with open(r'c:\Users\steven\Documents\HW\gkp2026\出题\flightgear-ctf\doc\飞行模拟CTF-开发计划.md', 'w', encoding='utf-8') as f:
+    f.write(kaifa_jihua)
+print('开发计划.md written OK')

@@ -41,3 +41,4 @@ Thumbs.db
 # Secrets / env files
 .env
 *.lock
+hb_secret.key

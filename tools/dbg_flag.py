@@ -28,8 +28,5 @@ print("wow rows in ils:", wows, "first wow idx:", next((i for i, x in enumerate(
 print("last row:", seg[-1])
 
 f2 = RULES["flag2"]
-tgt = (f2["target_lat"], f2["target_lon"])
-ok, ev = judge_flag2(rows, tgt, radius_m=f2["radius_m"], ceil_ft=f2["ceil_ft"],
-                     dur_s=f2["dur_s"], max_gap_s=f2["max_gap_s"],
-                     move_away_min_m=f2["move_away_min_m"])
-print("flag2:", ok, ev)
+r2 = judge_flag2(rows, f2)
+print("flag2:", r2)

@@ -52,124 +52,293 @@ VMDetector::VMDetectionResult VMDetector::detect() const {
 
 VMDetector::VMDetectionResult VMDetector::detect_windows() const {
     VMDetectionResult result;
+    result.vbs_detected = false;
     std::vector<std::string> indicators;
-    
-    // 1. Check CPUID hypervisor bit via PowerShell
-    std::string ps_output = exec_command("powershell -Command \"$cpu = Get-CimInstance Win32_Processor; $cpu.HypervisorPresent\"");
-    if (ps_output.find("True") != std::string::npos) {
-        indicators.push_back("CPUID Hypervisor Present");
-    }
-    
-    // 2. Check registry for VM indicators
-    std::string reg_keys[] = {
-        "HKLM\\HARDWARE\\DESCRIPTION\\System\\SystemManufacturer",
-        "HKLM\\HARDWARE\\DESCRIPTION\\System\\BIOS",
-        "HKLM\\SOFTWARE\\Microsoft\\Virtual Machine\\Guest\\Parameters"
-    };
-    
-    const char* vm_indicators[] = {"vmware", "virtualbox", "qemu", "hyper-v", "parallels"};
-    
-    for (const auto& key : reg_keys) {
-        std::string cmd = "powershell -Command \"Get-ItemProperty '" + std::string(key) + "' -ErrorAction SilentlyContinue | Format-List | Out-String\"";
+    bool hypervisor_present = false;
+    std::string manufacturer;
+    std::string model;
+
+    // ---- Phase 1: 传统 VM 检测 ----
+
+    // 1. Win32_ComputerSystem (Manufacturer, Model, HypervisorPresent)
+    {
+        std::string cmd = "powershell -Command \"$cs = Get-CimInstance Win32_ComputerSystem; "
+                          "Write-Host \\\"MANUFACTURER=$($cs.Manufacturer)\\\"; "
+                          "Write-Host \\\"MODEL=$($cs.Model)\\\"; "
+                          "Write-Host \\\"HYPERVISOR=$($cs.HypervisorPresent)\\\"\"";
         std::string output = exec_command(cmd);
-        for (const auto& ind : vm_indicators) {
-            if (output.find(ind) != std::string::npos) {
-                std::string msg = "Registry: " + std::string(key) + " contains " + ind;
-                indicators.push_back(msg);
+
+        size_t pos = output.find("MANUFACTURER=");
+        if (pos != std::string::npos) {
+            size_t end = output.find('\n', pos);
+            manufacturer = output.substr(pos + 13, end - pos - 13);
+            while (!manufacturer.empty() && manufacturer.back() == '\r')
+                manufacturer.pop_back();
+        }
+
+        pos = output.find("MODEL=");
+        if (pos != std::string::npos) {
+            size_t end = output.find('\n', pos);
+            model = output.substr(pos + 6, end - pos - 6);
+            while (!model.empty() && model.back() == '\r')
+                model.pop_back();
+        }
+
+        pos = output.find("HYPERVISOR=");
+        if (pos != std::string::npos) {
+            size_t end = output.find('\n', pos);
+            std::string hv = output.substr(pos + 11, end - pos - 11);
+            hypervisor_present = (hv.find("True") != std::string::npos);
+        }
+    }
+
+    // Known VM manufacturer keywords (case-insensitive)
+    const char* vm_manufacturers[] = {"vmware", "virtualbox", "qemu", "parallels", "xen"};
+    bool is_vm_manufacturer = false;
+    {
+        std::string lower_mfr = manufacturer;
+        std::transform(lower_mfr.begin(), lower_mfr.end(), lower_mfr.begin(),
+            [](unsigned char c){ return static_cast<char>(::tolower(c)); });
+        for (const auto* vm : vm_manufacturers) {
+            if (lower_mfr.find(vm) != std::string::npos) {
+                is_vm_manufacturer = true;
+                break;
             }
         }
     }
-    
-    // 3. Check for VM processes
-    std::string procs = exec_command("tasklist /FO CSV");
-    const char* vm_procs[] = {"vmtoolsd.exe", "VBoxService.exe", "VBoxTray.exe", 
-                              "qemu-ga.exe", "prl_cc.exe", "prl_tools.exe"};
-    for (const auto& proc : vm_procs) {
-        if (procs.find(proc) != std::string::npos) {
-            indicators.push_back("Process detected: " + std::string(proc));
+
+    bool is_vm_model = false;
+    {
+        std::string lower_model = model;
+        std::transform(lower_model.begin(), lower_model.end(), lower_model.begin(),
+            [](unsigned char c){ return static_cast<char>(::tolower(c)); });
+        if (lower_model.find("virtual machine") != std::string::npos ||
+            lower_model.find("virtual platform") != std::string::npos ||
+            lower_model.find("kvm") != std::string::npos) {
+            is_vm_model = true;
         }
     }
-    
-    // 4. Check MAC addresses
-    std::string mac_output = exec_command("powershell -Command \"Get-NetAdapter | Select-Object MacAddress, Status\"");
-    const char* vm_macs[] = {"00:50:56", "00:0C:29", "08:00:27"};
-    for (const auto& mac : vm_macs) {
-        if (mac_output.find(mac) != std::string::npos) {
-            indicators.push_back("MAC OUI indicates VM: " + std::string(mac));
+
+    // 2. Registry for VM indicators
+    {
+        const char* reg_keys[] = {
+            "HKLM\\HARDWARE\\DESCRIPTION\\System",
+        };
+        const char* vm_ind[] = {"vmware", "virtualbox", "qemu", "hyper-v", "parallels"};
+
+        for (const auto& key : reg_keys) {
+            std::string cmd = "powershell -Command \"Get-ItemProperty '" + std::string(key) +
+                              "' -ErrorAction SilentlyContinue | Out-String\"";
+            std::string output = exec_command(cmd);
+            for (const auto* ind : vm_ind) {
+                if (output.find(ind) != std::string::npos) {
+                    indicators.push_back("Registry BIOS contains: " + std::string(ind));
+                }
+            }
         }
     }
-    
-    result.vm_detected = !indicators.empty();
-    result.vm_brand = detect_brand(indicators);
-    result.techniques_used = indicators.size();
-    result.details = indicators;
-    result.recommendation = result.vm_detected ? "BLOCK" : "ALLOW";
-    
-    current_brand_ = result.vm_brand;
-    current_percentage_ = result.vm_detected ? 100 : 0;
-    
+
+    // 3. VM processes
+    {
+        std::string procs = exec_command("tasklist /FO CSV");
+        const char* vm_procs[] = {"vmtoolsd.exe", "VBoxService.exe", "VBoxTray.exe",
+                                  "qemu-ga.exe", "prl_cc.exe", "prl_tools.exe"};
+        for (const auto* proc : vm_procs) {
+            if (procs.find(proc) != std::string::npos) {
+                indicators.push_back("VM process: " + std::string(proc));
+            }
+        }
+    }
+
+    // 4. MAC OUI
+    {
+        std::string mac_output = exec_command(
+            "powershell -Command \"Get-NetAdapter | Select-Object MacAddress\"");
+        const char* vm_macs[] = {"00:50:56", "00:0C:29", "08:00:27"};
+        for (const auto* mac : vm_macs) {
+            if (mac_output.find(mac) != std::string::npos) {
+                indicators.push_back("VM MAC OUI: " + std::string(mac));
+            }
+        }
+    }
+
+    // Phase 1 result
+    if (!indicators.empty() || is_vm_manufacturer || is_vm_model) {
+        if (is_vm_manufacturer && indicators.empty())
+            indicators.push_back("VM manufacturer: " + manufacturer);
+        if (is_vm_model && indicators.empty())
+            indicators.push_back("VM model: " + model);
+
+        result.vm_detected = true;
+        result.vbs_detected = false;
+        result.vm_brand = detect_brand(indicators);
+        result.techniques_used = static_cast<int>(indicators.size());
+        result.details = indicators;
+        result.recommendation = "BLOCK";
+        current_brand_ = result.vm_brand;
+        current_percentage_ = 100;
+        return result;
+    }
+
+    // ---- Phase 2: VBS 检测（非VM但hypervisor开着 = VBS/Memory Integrity）----
+    std::vector<std::string> vbs_indicators;
+
+    // Check 1: HypervisorPresent on genuine hardware
+    if (hypervisor_present) {
+        vbs_indicators.push_back("Hypervisor running on genuine hardware (not a VM)");
+    }
+
+    // Check 2: DeviceGuard HVCI (Memory Integrity) registry
+    {
+        std::string reg = exec_command(
+            "powershell -Command \"Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\"
+            "DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity' "
+            "-Name Enabled -ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty Enabled\"");
+        if (reg.find('1') != std::string::npos) {
+            vbs_indicators.push_back("Memory Integrity (HVCI) is enabled (DeviceGuard)");
+        }
+    }
+
+    // Check 3: Credential Guard (LsaCfgFlags)
+    {
+        std::string lsa = exec_command(
+            "powershell -Command \"Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' "
+            "-Name LsaCfgFlags -ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty LsaCfgFlags\"");
+        int flags = 0;
+        try { flags = std::stoi(lsa); } catch (...) {}
+        if (flags >= 1) {
+            vbs_indicators.push_back("Credential Guard is enabled (LsaCfgFlags=" +
+                                     std::to_string(flags) + ")");
+        }
+    }
+
+    if (!vbs_indicators.empty()) {
+        result.vm_detected = true;
+        result.vbs_detected = true;
+        result.vm_brand = "VBS";
+        result.techniques_used = static_cast<int>(vbs_indicators.size());
+        result.details = vbs_indicators;
+        result.recommendation = "DISABLE_VBS: Turn off Memory Integrity in "
+                                "Windows Security > Device Security > Core Isolation.\n"
+                                "  If that doesn't work, disable Virtualization Technology in BIOS.";
+        current_brand_ = "VBS";
+        current_percentage_ = 100;
+        return result;
+    }
+
+    // Clean
+    result.vm_detected = false;
+    result.vbs_detected = false;
+    result.vm_brand = "None";
+    result.techniques_used = 0;
+    result.recommendation = "ALLOW";
+    current_brand_ = "None";
+    current_percentage_ = 0;
     return result;
 }
 
 VMDetector::VMDetectionResult VMDetector::detect_linux() const {
     VMDetectionResult result;
+    result.vbs_detected = false;
     std::vector<std::string> indicators;
-    
+    bool hypervisor_flag = false;
+    bool is_hw_vendor = false;
+
     // 1. /proc/cpuinfo hypervisor flag
     std::string cpuinfo = read_file("/proc/cpuinfo");
     if (cpuinfo.find("hypervisor") != std::string::npos) {
         indicators.push_back("/proc/cpuinfo: hypervisor flag");
+        hypervisor_flag = true;
     }
-    
-    // 2. DMI/SMBIOS
+
+    // 2. DMI/SMBIOS - check vendor
     const char* dmi_paths[] = {
         "/sys/class/dmi/id/product_name",
         "/sys/class/dmi/id/sys_vendor",
         "/sys/class/dmi/id/bios_vendor",
         "/sys/class/dmi/id/board_vendor"
     };
-    
+
     const char* vm_indicators[] = {"vmware", "virtualbox", "qemu", "kvm", "hyper-v", "parallels"};
-    
+    const char* hw_indicators[] = {"dell", "hp", "lenovo", "asus", "acer", "msi",
+                                    "gigabyte", "asrock", "intel", "supermicro",
+                                    "system76", "framework", "razer", "samsung"};
+
     for (const auto& path : dmi_paths) {
         std::string content = read_file(path);
-        for (const auto& ind : vm_indicators) {
+        // Check VM indicators first
+        for (const auto* ind : vm_indicators) {
             if (content.find(ind) != std::string::npos) {
                 indicators.push_back(std::string(path) + ": " + ind);
             }
         }
+        // Check if real hardware vendor
+        std::string lower = content;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+            [](unsigned char c){ return static_cast<char>(::tolower(c)); });
+        for (const auto* hw : hw_indicators) {
+            if (lower.find(hw) != std::string::npos) {
+                is_hw_vendor = true;
+                break;
+            }
+        }
     }
-    
+
     // 3. /dev/kvm
     if (fs::exists("/dev/kvm")) {
         indicators.push_back("/dev/kvm exists");
     }
-    
-    // 4. Check for VM processes
+
+    // 4. VM processes
     std::string procs = exec_command("ps aux");
     const char* vm_procs[] = {"vmtoolsd", "VBoxService", "qemu-ga", "virtiofsd"};
-    for (const auto& proc : vm_procs) {
+    for (const auto* proc : vm_procs) {
         if (procs.find(proc) != std::string::npos) {
             indicators.push_back("Process detected: " + std::string(proc));
         }
     }
-    
-    result.vm_detected = !indicators.empty();
+
+    // Phase 1 result: VM detected?
+    bool is_vm = !indicators.empty();
+
+    // Phase 2: VBS-equivalent (hypervisor flag on bare metal)
+    if (!is_vm && hypervisor_flag && is_hw_vendor) {
+        std::vector<std::string> vbs_indicators;
+        vbs_indicators.push_back("Hypervisor running on genuine hardware (KVM/VFIO active)");
+        if (fs::exists("/dev/kvm"))
+            vbs_indicators.push_back("/dev/kvm is accessible");
+        vbs_indicators.push_back("Disable KVM module (modprobe -r kvm_intel kvm) "
+                                 "or remove from BIOS");
+
+        result.vm_detected = true;
+        result.vbs_detected = true;
+        result.vm_brand = "VBS/KVM";
+        result.techniques_used = static_cast<int>(vbs_indicators.size());
+        result.details = vbs_indicators;
+        result.recommendation = "DISABLE_VBS: Unload KVM modules or disable VT-x in BIOS.";
+        current_brand_ = "VBS/KVM";
+        current_percentage_ = 100;
+        return result;
+    }
+
+    result.vm_detected = is_vm;
+    result.vbs_detected = false;
     result.vm_brand = detect_brand(indicators);
-    result.techniques_used = indicators.size();
+    result.techniques_used = static_cast<int>(indicators.size());
     result.details = indicators;
-    result.recommendation = result.vm_detected ? "BLOCK" : "ALLOW";
-    
+    result.recommendation = is_vm ? "BLOCK" : "ALLOW";
     current_brand_ = result.vm_brand;
-    current_percentage_ = result.vm_detected ? 100 : 0;
-    
+    current_percentage_ = is_vm ? 100 : 0;
     return result;
 }
 
 std::string VMDetector::detect_brand(const std::vector<std::string>& indicators) const {
     for (const auto& ind : indicators) {
         std::string lower = ind;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+            [](unsigned char c){ return static_cast<char>(::tolower(c)); });
         
         if (lower.find("vmware") != std::string::npos) return "VMware";
         if (lower.find("virtualbox") != std::string::npos || lower.find("vbox") != std::string::npos) return "VirtualBox";

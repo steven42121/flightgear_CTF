@@ -89,7 +89,7 @@ def create_launcher_linux(output: Path, config: dict):
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FG_BIN=${{FG_BIN:-/opt/flightgear/bin/fgfs}}
+FG_BIN=${{FG_BIN:-fgfs}}
 FG_ROOT=${{FG_ROOT:-{config['fg_root']}}}
 SCENERY_ROOT=${{SCENERY_ROOT:-{config['scenery_root']}}}
 CTF_SERVER=${{CTF_SERVER:-{config.get('server', '127.0.0.1')}}}
@@ -198,16 +198,31 @@ chmod +x launcher.sh
 
 
 def main():
+    from tools.fg_detect import detect
+    fg = detect()
+
     parser = argparse.ArgumentParser(description="打包 CTF 比赛环境")
     parser.add_argument("--output", default="build/package", help="输出目录")
-    parser.add_argument("--fg-root", required=True, help="FGData 根目录")
-    parser.add_argument("--fg-bin", default=r"C:\Program Files\FlightGear 2024.1\bin",
-                       help="FG 二进制目录")
-    parser.add_argument("--scenery", required=True, help="Terrasync 地景目录")
+    parser.add_argument("--fg-root", default=fg.data_root,
+                        help="FGData 根目录（默认自动检测）")
+    parser.add_argument("--fg-bin", default=fg.bin_dir,
+                        help="FG 二进制目录（默认自动检测）")
+    parser.add_argument("--scenery", default=fg.scenery_dir,
+                        help="Terrasync 地景目录（默认自动检测）")
     parser.add_argument("--server", default="127.0.0.1", help="判决服务器地址")
     parser.add_argument("--mode", default="competitive", choices=["competitive", "training"])
     parser.add_argument("--callsign", default="PLAYER", help="默认 callsign")
     args = parser.parse_args()
+
+    if not args.fg_root:
+        print("ERROR: Cannot find FGData directory. Set FG_ROOT or use --fg-root.", file=sys.stderr)
+        sys.exit(1)
+    if not args.fg_bin:
+        print("ERROR: Cannot find FG binary directory. Set FG_BIN or use --fg-bin.", file=sys.stderr)
+        sys.exit(1)
+    if not args.scenery:
+        print("ERROR: Cannot find scenery directory. Set FG_SCENERY or use --scenery.", file=sys.stderr)
+        sys.exit(1)
     
     output = Path(args.output)
     fg_root = Path(args.fg_root)

@@ -1,3 +1,7 @@
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include "Logger.hpp"
 #include <iostream>
 #include <fstream>
@@ -33,7 +37,15 @@ void Logger::log(Level level, const std::string& message) {
     ss << " [" << level_to_string(level) << "] " << message;
     
     std::string line = ss.str();
-    std::cout << line << std::endl;
+    
+    // In JSON mode (when output starts with '{'), write to stderr to avoid corrupting JSON
+    // This is detected by checking if the line starts with a timestamp (warning/error) vs JSON
+    if (line[0] == '2') {
+        // Log line (starts with timestamp) - always go to stderr to preserve JSON
+        std::cerr << line << std::endl;
+    } else {
+        std::cout << line << std::endl;
+    }
     
     if (log_file_.is_open()) {
         log_file_ << line << std::endl;
