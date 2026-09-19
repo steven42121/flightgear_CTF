@@ -8,8 +8,8 @@ FlightGear 侧（addon / generic 遥测 / launcher）为参考实现，需在
 ```
 flightgear-ctf/
 ├── README.md
-├── launcher.sh                  # FG 启动器（参考实现）
-├── server/                      # 判决服务器（Python，零第三方依赖）
+├── launcher.sh                  # FG 启动器（含 L0 启动校验 + L5 会话）
+├── server/                      # 判决服务器（Python，依赖 pyyaml）
 │   ├── poller.py                #   入口：MP-UDP:5000 / FDM-UDP:3001 / TEXT-TCP:3002
 │   ├── mp.py                    #   MP 协议（36B 头 + MsgId=7）编码/解码
 │   ├── localfdm.py              #   FGNetFDM v24 (408B) 编码/解码
@@ -19,20 +19,31 @@ flightgear-ctf/
 │   ├── challenge.py             #   challenge 注入与响应校验
 │   ├── rules.yaml / rules_loader.py
 │   ├── scores.py                #   flag = HMAC(K_server, uid‖checkpoint)
+│   ├── anticheat/               #   反作弊模块（基于 VMAware + UltimateAntiCheat 设计）
+│   │   ├── __init__.py          #     模块导出
+│   │   ├── l0_args.py           #     L0: 启动参数白名单校验
+│   │   ├── l1_integrity.py      #     L1: 文件哈希校验
+│   │   ├── l2_property_audit.py #     L2: 属性树写入审计
+│   │   ├── l3_fdm_tracker.py    #     L3: FDM 源可信度追踪
+│   │   ├── l4_integrity.py      #     L4: 进程完整性检查（CRC/注入扫描）
+│   │   ├── l5_heartbeat.py      #     L5: 心跳票据系统（HMAC 链）
+│   │   ├── anticheatd.py        #     反作弊守护进程入口
+│   │   └── selfcheck.py         #     自检工具（anti-VM + 环境检查）
 │   └── checkers/flag{1,2,3}.py  #   三题判决器（阈值全部集中在 rules.yaml）
 ├── tools/
 │   ├── gen_testdata.py          #   测试轨迹生成（walk/arc/ils/ceil/taxi/speed）
 │   ├── demo_bot.py              #   回放器：mp / fdm / text 三种出流
 │   ├── ctf2gen.py               #   flag2 谜题生成 + 参数自检
+│   ├── search_repos.py          #   GitHub 开源反作弊项目搜索
 │   └── verify_all.py            #   一键自验（协议 roundtrip + 三题判决）
 ├── client/
 │   ├── ctf-addon/               #   FG addon（metadata + Nasal 入口）
 │   └── Protocol/ctf-telemetry.xml  # generic 30Hz 遥测定义
-└── docs/
-    ├── 1-勘误与修正.md           #   文档勘误（头长/psi/FGFS 大端/文档笔误）
-    ├── 2-平台侧.md              #   fgms 部署 + MP 解析 + 判决
-    ├── 3-反作弊设计.md          #   L0–L5 + KDF/心跳/蜜罐（不含源码）
-    └── 4-客户端侧.md            #   addon / 遥测 / launcher / P0 清单
+└── doc/
+    ├── 飞行模拟CTF-开发计划.md
+    ├── 飞行模拟CTF-系统设计.md
+    ├── 飞行模拟CTF-题解与裁判手册.md
+    └── 飞行模拟CTF-题面.md
 ```
 
 ## 快速开始（判决服务器全链路自验）
@@ -46,7 +57,13 @@ python -m tools.gen_testdata --out build/track.csv --segments walk,arc,ils,ceil,
 # 2. 一键自验：MP/FDM 协议 roundtrip + 三题判决
 python -m tools.verify_all --csv build/track.csv
 
-# 3. 端到端联调（两个终端）
+# 3. 反作弊自检
+python -m server.anticheat.selfcheck
+
+# 3. 反作弊自检
+python -m server.anticheat.selfcheck
+
+# 4. 启动判决服务器（两个终端）
 python -m server.poller --db build/ctf.db          # 终端 1
 python -m tools.demo_bot --csv build/track.csv --mode mp --callsign TEST01  # 终端 2
 # 静默 30s 后 poller 打印 VERDICT 并发放 flag
@@ -56,6 +73,30 @@ python -m tools.demo_bot --csv build/track.csv --mode mp --callsign TEST01  # �
 
 ```bash
 python -m tools.ctf2gen --uid TEAM01 --station-a 36.05,-115.20 --station-b 36.30,-115.10 --station-c 36.10,-115.00
+```
+
+## 反作弊模块（基于 VMAware + UltimateAntiCheat 设计）
+
+| 层级 | 模块 | 功能 |
+|------|------|------|
+| L0 | `l0_args.py` | 启动参数白名单校验（禁止 `--fdm=external` 等） |
+| L1 | `l1_integrity.py` | 文件哈希校验（fgfs/机型/addon SHA256） |
+| L2 | `l2_property_audit.py` | 属性树写入审计（监控 `/position/*` 等关键路径） |
+| L3 | `l3_fdm_tracker.py` | FDM 源可信度追踪（区分合法 FDM 与外部注入） |
+| L4 | `l4_integrity.py` | 进程完整性检查（CRC、注入扫描） |
+| L5 | `l5_heartbeat.py` | 心跳票据系统（HMAC 链，中断即作废） |
+| — | `selfcheck.py` | 启动前自检（anti-VM + 环境检查） |
+| — | `anticheatd.py` | 守护进程入口 |
+
+```bash
+# 运行自检
+python -m server.anticheat.selfcheck
+
+# 测试启动参数校验
+python -m server.anticheat.anticheatd.py --mode check -- --aircraft=c172p --addon=./ctf-addon
+
+# 创建会话并获取 ticket
+python -m server.anticheat.anticheatd.py --mode session --userid TEAM01
 ```
 
 ## 已实现 ↔ 文档映射
@@ -72,13 +113,14 @@ python -m tools.ctf2gen --uid TEAM01 --station-a 36.05,-115.20 --station-b 36.30
 | doc3 §4 flag 下发 | server/scores.py（K_server 独立，满足 R7） |
 | doc2 §8.4 addon 最小结构 | client/ctf-addon/ |
 | doc2 §8.2 generic 30Hz 遥测 | client/Protocol/ctf-telemetry.xml |
-| doc2 §4.5 anti-VM | 未实现（属反作弊 native 进程，见 docs/3） |
+| doc3 §4.1-L5 反作弊架构 | server/anticheat/（L0-L5 全层实现） |
+| doc3 §4.5 anti-VM | server/anticheat/selfcheck.py（跨平台检测） |
 
 ## 明确未实现（需要独立排期）
 
-1. **反作弊 native 进程（doc2 §4 / doc1 P3，关键路径 7 人日）**——C/C++ 项目，
-   含 anti-VM、CRC、心跳 HMAC 链与蜜罐分支。设计要点已写入 docs/3，
-   包括"必须用 `K_server` 发 flag、不能用 K"这条连带崩塌红线。
+1. **native 版 anticheatd（C/C++ 二进制）**——当前 Python 实现仅作参考，
+   正式比赛需用 native 进程（反调试、内存保护、密钥擦除）。
+   设计参考 UltimateAntiCheat 架构，VMAware 提供 VM 检测算法。
 2. **fgms 私有化部署**——docker 镜像 `flightgear/fgms:0.13.4`，
    关 relay/tracked/is_hub；MP 流量当前由本仓库 `server/poller.py` 直接接收，
    fgms 是正式部署的可选前置。
