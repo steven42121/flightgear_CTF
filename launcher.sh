@@ -68,7 +68,7 @@ fi
 
 ARGS=(
   --aircraft=c172p
-  --airport=DEV            # ← 部署时替换为真实出发机场
+  --airport=KSFO            # ← 部署时替换为真实出发机场
   --callsign="$CALLSIGN"
   --addon="$HERE/client/ctf-addon"
   --telnet=5401

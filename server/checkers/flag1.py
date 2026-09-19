@@ -1,63 +1,110 @@
+"""Flag1: 起飞并到达指定目标点（上科大）
+
+新流程：
+1. 选手从机场起飞
+2. 飞往目标坐标（上科大 31.177°N, 121.596°E）
+3. 在目标点半径内停留足够时间
+4. 服务器下发ATC语音（含加密flag key）
+5. 选手解密后输入到web界面获得flag
+"""
 import math
+import base64
+import hashlib
+import time
+from typing import List, Tuple, Optional, Dict
 
 from .. import geodesy
 
 
-def _gs_dev_norm(row, cfg):
-    """下滑道指针归一化偏差：-1..1，满刻度按 gs_full_scale_deg（默认 0.7°）。"""
-    d = geodesy.haversine_m(row.lat, row.lon, cfg["thr_lat"], cfg["thr_lon"])
-    if d < 1.0:
-        d = 1.0
-    glide_ft = cfg["thr_alt_ft"] + d * math.tan(math.radians(3.0)) / geodesy.M_FT
-    dev_deg = math.degrees(math.atan2((row.alt_ft or 0.0) - glide_ft, d))
-    full = cfg.get("gs_full_scale_deg", 0.7)
-    return max(-1.0, min(1.0, dev_deg / full))
-
-
-def _lateral_offset_m(row, cfg):
-    return geodesy.cross_track_m(cfg["thr_lat"], cfg["thr_lon"],
-                                 cfg["course_deg"], row.lat, row.lon)
-
-
-def judge_flag1(rows, cfg):
-    """doc3 §1.3 判据（勘误后版本）：
-      1) 稳定进近：10nm 内 |指针| < 0.3 的时间占比 ≥ 0.90 → 25 分
-      2) 决断高度前不得大幅偏离（<30ft 的帧不计）         → 25 分
-      3) 接地品质：VS/坡度/横向偏差 + 无弹跳              → 落地 20 + 品质 30
-      满分 100 = 稳定25 + 决断25 + 落地20 + 品质30
+def judge_flag1(rows: List, cfg: Dict) -> Dict:
     """
-    res = {"flag": 1, "land": 0.0, "approach": 0.0, "touch": 0.0,
-           "total": 0.0, "verdict": "FAIL", "evidence": {}}
-    ev = res["evidence"]
-    if len(rows) < 10:
-        res["verdict"] = "NO_DATA"
+    判定是否到达目标点并下发ATC语音
+    
+    参数:
+        rows: 轨迹数据列表
+        cfg: 配置字典，包含 target_lat, target_lon, radius_m, ceil_ft, dur_s 等
+    
+    返回:
+        dict: {
+            'total': float,  # 得分（0或100）
+            'reached': bool,  # 是否已到达
+            'atc_audio': str, # base64编码的ATC语音（首次到达时下发）
+            'evidence': dict  # 证据数据
+        }
+    """
+    res = {
+        "total": 0.0,
+        "reached": False,
+        "atc_audio": None,
+        "evidence": {}
+    }
+    
+    if len(rows) < 2:
         return res
-
-    # 接地帧 = 最后一次 wow 0→1 转换（一场可能触多次，判最后一次）
-    td = None
-    for i in range(1, len(rows)):
-        if (rows[i].wow and not rows[i - 1].wow
-                and (rows[i].agl_ft or 0.0) < 3.0):
-            td = i
-
-    # 进近段：从接地往回找最后一个 >12nm 的位置作为进近入口。
-    # 这样能正确处理多段轨迹（如 walk/arc/ils/speed），只取最终进近段。
-    thr = (cfg["thr_lat"], cfg["thr_lon"])
-    dists = [geodesy.haversine_m(r.lat, r.lon, thr[0], thr[1]) for r in rows]
-    end = td if td is not None else len(rows) - 1
-    entry = 0
-    for i in range(end, -1, -1):
-        if dists[i] > cfg["gs_dist_start_m"] * 1.2:
-            entry = i
-            break
-    seg = [rows[i] for i in range(entry, end + 1)
-           if dists[i] <= cfg["gs_dist_start_m"]]
-    if not seg:
-        ev["note"] = "未检测到 10nm 内的进近下降段"
+    
+    target_lat = cfg.get("target_lat", 31.1770)
+    target_lon = cfg.get("target_lon", 121.5960)
+    radius_m = cfg.get("radius_m", 500.0)
+    ceil_ft = cfg.get("ceil_ft", 1000.0)
+    dur_s = cfg.get("dur_s", 5.0)
+    
+    # 计算每个点到目标的距离
+    dists = []
+    for r in rows:
+        d = geodesy.haversine_m(r.lat, r.lon, target_lat, target_lon)
+        dists.append(d)
+    
+    # 找出在半径内且高度合适的点
+    valid_points = [
+        i for i, d in enumerate(dists)
+        if d <= radius_m and (rows[i].alt_ft or 0) <= ceil_ft
+    ]
+    
+    if not valid_points:
+        res["evidence"]["closest_m"] = round(min(dists), 1) if dists else None
+        res["evidence"]["note"] = "未接近目标点"
         return res
-
-    stable = sum(1 for r in seg if abs(_gs_dev_norm(r, cfg)) < cfg["gs_stable_norm"]) / len(seg)
-    ev["stable_ratio"] = round(stable, 4)
+    
+    # 检查是否有连续 dur_s 的时间在目标区域内
+    continuous_time = 0.0
+    max_continuous_time = 0.0
+    last_idx = None
+    segment_start = None
+    
+    for idx in valid_points:
+        if last_idx is not None and (rows[idx].ts - rows[last_idx].ts) <= 1.0:
+            # 连续帧
+            if segment_start is None:
+                segment_start = idx
+            continuous_time = rows[idx].ts - rows[segment_start].ts
+        else:
+            # 重置
+            max_continuous_time = max(max_continuous_time, continuous_time)
+            segment_start = idx
+            continuous_time = 0.0
+        last_idx = idx
+    
+    max_continuous_time = max(max_continuous_time, continuous_time)
+    
+    reached = max_continuous_time >= dur_s
+    res["evidence"]["closest_m"] = round(min(dists), 1)
+    res["evidence"]["max_stay_s"] = round(max_continuous_time, 2)
+    res["evidence"]["reached"] = reached
+    
+    if reached:
+        res["total"] = 100.0
+        res["reached"] = True
+        # 生成ATC语音（实际部署时应为预录制的音频）
+        # 这里简化处理：生成一个包含flag key的base64编码音频占位符
+        flag_key = hashlib.sha256(
+            f"{cfg.get('userid', 'unknown')}|flag1|{int(time.time())}".encode()
+        ).hexdigest()[:32]
+        # 模拟base64编码的音频数据
+        audio_content = f"ATC: Welcome to Shanghai University of Science and Technology. Your code is: {flag_key}"
+        res["atc_audio"] = base64.b64encode(audio_content.encode()).decode()
+        res["evidence"]["flag_key_hint"] = flag_key[:8] + "..."  # 只显示前缀
+    
+    return res
     res["approach"] += 25.0 * (stable >= cfg["stable_ratio_min"])
 
     dec = [r for r in seg

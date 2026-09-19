@@ -1,10 +1,17 @@
-"""判决轮询：会话静默 close_idle_s 后收口，跑三题判决并发 flag。"""
+"""判决轮询：会话静默 close_idle_s 后收口，跑两题判决并发 flag。
+
+新流程（简化版）：
+- Flag1: 起飞并飞到上科大 (31.177°N, 121.596°E)，服务器下发ATC语音（含key）
+- Flag2: 原flag3——物理不可能状态（飞天/遁地/超速），绕过反作弊达成
+
+ATC语音包含加密的flag key，选手需解密后输入到web界面获得flag1。
+"""
 import time
+import base64
 
 from . import scores
 from .checkers.flag1 import judge_flag1
 from .checkers.flag2 import judge_flag2
-from .checkers.flag3 import judge_flag3
 from .trackdb import TrackDB
 
 
@@ -14,29 +21,25 @@ def judge_session(db: TrackDB, sid, rules):
     uid = sess["callsign"] if sess else "unknown"
     out = {"sid": sid, "uid": uid, "n_samples": len(rows), "results": {}}
 
-    # flag1
-    r1 = judge_flag1(rows, rules["flag1"])
+    # Flag1: 到达上科大目标点
+    f1cfg = rules["flag1"]
+    f1cfg["userid"] = uid  # 注入用户ID用于生成唯一key
+    r1 = judge_flag1(rows, f1cfg)
     out["results"]["flag1"] = r1
-    if r1["total"] > 0:
+    
+    if r1.get("reached"):
         out["flag1"] = scores.issue_flag(uid, 1)
+        # 存储ATC音频供前端播放
+        out["atc_audio"] = r1.get("atc_audio")
+        out["flag1_hint"] = r1.get("evidence", {}).get("flag_key_hint")
 
-    # flag2（目标点 = 选手解算的交点；示例用 rules 中的固定点，部署时按
-    # callsign 派生后写入会话，见 docs/2-平台侧.md）
+    # Flag2: 物理不可能状态（原flag3）
     f2cfg = rules["flag2"]
-    tgt = (f2cfg["target_lat"], f2cfg["target_lon"])
-    ok2, ev2 = judge_flag2(
-        rows, tgt, radius_m=f2cfg["radius_m"], ceil_ft=f2cfg["ceil_ft"],
-        dur_s=f2cfg["dur_s"], max_gap_s=f2cfg["max_gap_s"],
-        move_away_min_m=f2cfg["move_away_min_m"])
-    out["results"]["flag2"] = {"ok": ok2, "evidence": ev2, "target": tgt}
-    if ok2:
+    r2 = judge_flag2(rows, f2cfg)
+    out["results"]["flag2"] = r2
+    
+    if r2.get("total", 0) > 0:
         out["flag2"] = scores.issue_flag(uid, 2)
-
-    # flag3
-    r3 = judge_flag3(rows, vne_kias=rules["flag3"]["vne_kias"])
-    out["results"]["flag3"] = r3
-    if r3["score"] > 0:
-        out["flag3"] = scores.issue_flag(uid, 3)
 
     return out
 

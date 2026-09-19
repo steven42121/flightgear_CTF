@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.env/
+.venv/
+
+# Build outputs
+build/
+out/
+dist/
+*.egg-info/
+
+# CMake build
+anticheatd/build/
+*CMakeCache.txt
+*CMakeFiles/
+*.cmake
+*.log
+*.ninja
+*.ninja.dep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+!server/rules.yaml
+
+# Secrets / env files
+.env
+*.lock

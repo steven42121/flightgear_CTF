@@ -1,7 +1,5 @@
-# 飞行模拟 CTF · 判决规则配置（示例值，正式比赛前必须用 P0 基线数据校准）
-#
-# ⚠ 所有阈值都是"占位值"：开发环境用的是虚构机场 (36.1500, -115.1500)，
-#   部署前请换成实际场地坐标，并按《开发计划》P0 用 stock AP 跑 20 次基线重校。
+# 飞行模拟 CTF · 判决规则配置
+# ⚠ 正式比赛前必须用 P0 基线数据校准阈值
 
 telemetry:
   rate_hz: 30          # generic output 遥测频率
@@ -14,39 +12,21 @@ session:
   grace_missed: 5
 
 flag1:
-  # 虚构机场：跑道 36，五边朝北飞 (course 360)
-  airport: "DEV-FIELD RWY 36 (虚构，部署时替换)"
-  thr_lat: 36.150000
-  thr_lon: -115.150000
-  thr_alt_ft: 2000.0
-  course_deg: 360.0
-  # 阈值（原 doc3 §1.3，逐条保留了原值）
-  vs_tol_fps: 2.5        # 150 fpm ≈ 2.5 fps
-  roll_tol_deg: 5.0
-  lateral_tol_m: 5.0
-  gs_stable_norm: 0.30   # |下滑道指针| < 0.3 视为"在下滑道上"
-  stable_ratio_min: 0.90 # 10nm 内 ≥90% 时间在下滑道上 → 稳定进近分
-  gs_dist_start_m: 18520.0  # 10 nm
-  gs_full_scale_deg: 0.7    # ILS 满刻度偏差角（≈0.7°），指针归一化用
-  dec_alt_ft: 200.0      # 决断高度 200ft
-  dec_min_agl_ft: 30.0   # 修正：低于 30ft 的帧不算"偏离"（此时正常拉飘会打满指针）
-  unstable_norm: 0.80
-  bounce_agl_ft: 3.0
-  bounce_window_s: 2.0
+  # 上海浦东机场 ZSPD → 上科大张江校区
+  airport: "ZSPD"
+  thr_lat: 31.1434
+  thr_lon: 121.8050
+  target_lat: 31.1770
+  target_lon: 121.5960
+  radius_m: 500.0      # 到达上科大判定半径
+  ceil_ft: 1000.0      # 高度上限（防止高空飞掠）
+  dur_s: 5.0           # 持续时长要求
+  # ATC语音下发参数
+  atc_audio_base64: ""  # 运行时注入，包含flag key
+  decryption_hint: "base64_decode_and_xor"  # 提示用户解密方式
 
 flag2:
-  radius_m: 2000.0       # 水平半径
-  ceil_ft: 8000.0        # 高度上限
-  dur_s: 10.0            # 持续时长
-  max_gap_s: 0.5         # 连续性：轨迹空洞超过该值即断开
-  move_away_min_m: 500.0 # 触发后 3s 必须离开 ≥500m（防"擦边悬停"）
-  # 下面是开发占位目标点：测试绕圈的实际圆心是 (36.10, -115.28333)
-  # （圆心在起点以西 8nm），取其正北 8nm 圆上点为目标（arc 在 t≈255s 穿过）。
-  # 正式部署时由 per-user 谜题生成器派生（见 tools/ctf2gen.py），写入会话。
-  target_lat: 36.219500
-  target_lon: -115.283333
-
-flag3:
+  # 物理不可能状态判定（原flag3）
   soar_alt_ft: 100000.0
   soar_dur_s: 10.0
   dig_agl_ft: -300.0

@@ -1,51 +1,81 @@
+# Flag2: 物理不可能状态判定（原flag3）
+#
+# 绕过反作弊实现以下三种状态之一：
+# 1. 飞天：气压高度 > 100,000 ft，持续 >= 10s
+# 2. 遁地：AGL < -300 ft，持续 >= 10s
+# 3. 超速：空速 > 3xVNE，持续 >= 15s
+#
+# 要求状态连续平滑（防瞬移刷分）
+
+import math
+from typing import List, Dict
 from .. import geodesy
 
+VNE_KIAS = 163.0
+THRESHOLD = {
+    'soar': (100000.0, 10.0),
+    'dig': (-300.0, 10.0),
+    'speed': (3.0, 15.0),
+}
+MAX_ACCEL_G = 50.0
+MAX_GROUND_V_MS = 3500.0
 
-def judge_flag2(rows, target, radius_m=2000.0, ceil_ft=8000.0, dur_s=10.0,
-                max_gap_s=0.5, move_away_min_m=500.0):
-    """doc3 §2.4 触发判定（勘误后版本）：
-    - 半径内 + 低于上限 + 持续 ≥ dur_s（允许 ≤max_gap_s 的采包抖动，但整段不得中断）；
-    - 触发后 3s 必须离开 ≥ move_away_min_m（防"擦边悬停"骗持续时长）。
-    返回 (ok, evidence)。
-    """
-    ev = {"closest_m": None}
-    if len(rows) < 2:
-        return False, ev
-    dists = [geodesy.haversine_m(r.lat, r.lon, target[0], target[1]) for r in rows]
-    i_min = min(range(len(rows)), key=lambda i: dists[i])
-    ev["closest_m"] = round(dists[i_min], 1)
 
-    inside = [i for i, d in enumerate(dists)
-              if d <= radius_m and (rows[i].alt_ft or 0.0) <= ceil_ft]
-    if not inside:
-        return False, ev
-
-    # 连续簇：允许小空洞（UDP 丢包），不允许长空洞（瞬移擦边）
-    clusters = []
-    cur = [inside[0]]
-    for i in inside[1:]:
-        if rows[i].ts - rows[cur[-1]].ts <= max_gap_s + 1.0 / 10.0:
+def _best_run(rows, pred):
+    runs, cur = [], []
+    for i, r in enumerate(rows):
+        if pred(r):
             cur.append(i)
         else:
-            clusters.append(cur)
-            cur = [i]
-    clusters.append(cur)
+            if cur:
+                runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return max(runs, key=len) if runs else []
 
-    best = max(clusters, key=lambda c: rows[c[-1]].ts - rows[c[0]].ts)
-    span = rows[best[-1]].ts - rows[best[0]].ts
-    ev["best_span_s"] = round(span, 2)
-    ev["clusters"] = len(clusters)
-    if span < dur_s:
-        return False, ev
 
-    i_end = best[-1]
-    i_later = None
-    for i in range(i_end + 1, len(rows)):
-        if rows[i].ts - rows[i_end].ts >= 3.0:
-            i_later = i
-            break
-    if i_later is not None:
-        ev["away_after_3s_m"] = round(dists[i_later], 1)
-        if dists[i_later] < move_away_min_m:
-            return False, ev
-    return True, ev
+def _smooth(rows, idxs, max_accel_g=MAX_ACCEL_G):
+    prev_v = None
+    for a, b in zip(idxs, idxs[1:]):
+        ra, rb = rows[a], rows[b]
+        dt = rb.ts - ra.ts
+        if dt <= 0:
+            return False
+        v = geodesy.haversine_m(ra.lat, ra.lon, rb.lat, rb.lon) / dt
+        if v > MAX_GROUND_V_MS:
+            return False
+        if prev_v is not None and abs(v - prev_v) / dt > max_accel_g * 9.81:
+            return False
+        prev_v = v
+    return True
+
+
+def judge_flag2(rows: List, cfg: Dict) -> Dict:
+    vne_kias = cfg.get('vne_kias', VNE_KIAS)
+    out = {'total': 0.0, 'checkpoints': {}, 'verdict': 'FAIL', 'evidence': {}}
+    if len(rows) < 2:
+        return out
+    runs = {
+        'soar': _best_run(rows, lambda r: (r.alt_ft or 0.0) > THRESHOLD['soar'][0]),
+        'dig': _best_run(rows, lambda r: (r.agl_ft or 0.0) < THRESHOLD['dig'][0]),
+        'speed': _best_run(rows, lambda r: (r.vcas_kt or 0.0) > THRESHOLD['speed'][0] * vne_kias),
+    }
+    n = 0
+    for name, idxs in runs.items():
+        need_dur = THRESHOLD[name][1]
+        dur = (rows[idxs[-1]].ts - rows[idxs[0]].ts) if idxs else 0.0
+        smooth = _smooth(rows, idxs) if idxs else False
+        ok = bool(idxs) and dur >= need_dur and smooth
+        out['checkpoints'][name] = {'ok': ok, 'duration_s': round(dur, 2), 'smooth': smooth, 'samples': len(idxs)}
+        if ok:
+            n += 1
+    if n == 3:
+        out['total'] = 100.0
+    elif n == 2:
+        out['total'] = 50.0
+    elif n == 1:
+        out['total'] = 20.0
+    out['verdict'] = 'PASS' if out['total'] > 0 else 'FAIL'
+    out['evidence'] = {'vne_kias': vne_kias, 'thresholds': {k: list(v) for k, v in THRESHOLD.items()}}
+    return out
