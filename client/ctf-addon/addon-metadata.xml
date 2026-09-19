@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PropertyList>
+  <id>org.gkp2026.ctf</id>
+  <name>MAYDAY CTF Addon</name>
+  <version>1.0.0</version>
+  <maintainer>gkp2026 出题组</maintainer>
+  <min-launcher-version>2020.2.7</min-launcher-version>
+  <description>
+    飞行模拟 CTF 附加题「MAYDAY」的客户端场景/规则插件。
+    训练模式可自由实验（不产出证据）；正式模式产出的证据流走
+    generic 30Hz 遥测 + multiplayer 10Hz 位置包，由判决服务器观测。
+  </description>
+</PropertyList>

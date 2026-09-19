@@ -1,0 +1,7 @@
+total rows: 26513
+flag1: {'flag': 1, 'land': 0.0, 'approach': 0.0, 'touch': 0.0, 'total': 0.0, 'verdict': 'FAIL', 'evidence': {'note': '未进入 10nm 进近段'}}
+ils rows: 4532 min/max dev: -1.0 6.437670650932992e-05
+dev<0.3 ratio: 0.8989408649602825
+wow rows in ils: 417 first wow idx: 4115
+last row: TrackRow(ts=1789838128.9927516, lat=36.16346770391664, lon=-115.15, alt_ft=2000.0, agl_ft=0.0, hdg=None, pitch=None, roll=None, vcas_kt=70.0, vs_fps=0.0, wow=1.0)
+flag2: True {'closest_m': 1216.9, 'best_span_s': 71.7, 'clusters': 1, 'away_after_3s_m': 2106.2}

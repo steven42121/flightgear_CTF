@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MAYDAY CTF 遥测协议（generic protocol）。
+  放在 $FG_ROOT/Protocol/ 或 --generic 第 6 段给相对名后由 FG 在 Protocol 目录查找；
+  本文件由 launcher.sh 拷贝/软链到 FG 的 Protocol 目录。
+
+  用法（由 launcher.sh 拼出，选手无需手输）：
+  --generic=socket,out,30,127.0.0.1,5510,udp,ctf-telemetry
+
+  二进制帧格式（parser.py --format csv 同款，逗号分隔）：
+  ts,lat,lon,alt_ft,agl_ft,heading,pitch,roll,vcas,vs_fps,wow
+-->
+<PropertyList>
+  <generic>
+    <output>
+      <line_separator>newline</line_separator>
+      <var_separator>,</var_separator>
+
+      <chunk>
+        <name>sim timestamp</name>
+        <type>float</type>
+        <node>/sim/time/elapsed-sec</node>
+        <format>%.3f</format>
+      </chunk>
+
+      <chunk>
+        <name>latitude</name>
+        <type>double</type>
+        <node>/position/latitude-deg</node>
+        <format>%.7f</format>
+      </chunk>
+
+      <chunk>
+        <name>longitude</name>
+        <type>double</type>
+        <node>/position/longitude-deg</node>
+        <format>%.7f</format>
+      </chunk>
+
+      <chunk>
+        <name>altitude msl</name>
+        <type>float</type>
+        <node>/position/altitude-ft</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>altitude agl</name>
+        <type>float</type>
+        <node>/position/altitude-agl-ft</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>heading</name>
+        <type>float</type>
+        <node>/orientation/heading-deg</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>pitch</name>
+        <type>float</type>
+        <node>/orientation/pitch-deg</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>roll</name>
+        <type>float</type>
+        <node>/orientation/roll-deg</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>calibrated airspeed</name>
+        <type>float</type>
+        <node>/velocities/airspeed-kt</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>vertical speed</name>
+        <type>float</type>
+        <node>/velocities/vertical-speed-fps</node>
+        <format>%.2f</format>
+      </chunk>
+
+      <chunk>
+        <name>weight on wheels</name>
+        <type>int</type>
+        <node>/ctf/evidence/wow</node>
+        <format>%d</format>
+      </chunk>
+    </output>
+  </generic>
+</PropertyList>

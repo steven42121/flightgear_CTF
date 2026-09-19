@@ -1,0 +1,177 @@
+"""一键自验：MP/FDM 协议 roundtrip + 三题判决。
+
+    python -m tools.verify_all            # 先自动生成 build/track.csv
+覆盖 doc1《验收测试清单》中可离线验证的条目。
+"""
+import csv
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from server.localfdm import FG_NET_FDM_SIZE, encode_fdm, parse_fdm  # noqa: E402
+from server.mp import (V2_PAD_MAGIC, encode_position, parse_header,   # noqa: E402
+                       parse_position, quat_to_angle_axis,
+                       angle_axis_to_euler)
+from server.rules_loader import load_rules  # noqa: E402
+from server.trackrow import TrackRow  # noqa: E402
+from server.checkers.flag1 import judge_flag1  # noqa: E402
+from server.checkers.flag2 import judge_flag2  # noqa: E402
+from server.checkers.flag3 import judge_flag3  # noqa: E402
+
+RULES = load_rules(str(REPO / "server" / "rules.yaml"))
+FAILURES = []
+
+
+def check(name, ok, detail=""):
+    print(("  [PASS] " if ok else "  [FAIL] ") + name
+          + (f"  ({detail})" if detail else ""))
+    if not ok:
+        FAILURES.append(name)
+
+
+def load_rows(csv_path):
+    rows = []
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        for rec in csv.DictReader(fh):
+            rows.append(TrackRow.from_dict(
+                {k: float(v) for k, v in rec.items()}))
+    return rows
+
+
+def test_mp_roundtrip():
+    print("== MP 协议 roundtrip ==")
+    pkt = encode_position("TEST01", 36.5, -115.3, 12000.0, 9000.0,
+                          90.0, 5.0, -3.0,
+                          vel_n_ms=50.0, vel_e_ms=20.0, ts=1234.5)
+    hdr = parse_header(pkt)
+    check("头 36B / magic / callsign / msgid=7",
+          hdr["msg_len"] == len(pkt) and hdr["callsign"] == "TEST01"
+          and hdr["msg_id"] == 7, f"len={hdr['msg_len']}")
+    check("V2 pad magic", pkt[-4:] == V2_PAD_MAGIC.to_bytes(4, "big"))
+    p = parse_position(pkt, recv_time=999.0)
+    check("位置误差 < 1e-6 度",
+          abs(p["lat"] - 36.5) < 1e-6 and abs(p["lon"] + 115.3) < 1e-6,
+          f"lat={p['lat']:.7f} lon={p['lon']:.7f}")
+    check("高度误差 < 1 ft", abs(p["alt_ft"] - 12000.0) < 1.0)
+    check("航向误差 < 0.01 度",
+          abs((p["hdg"] - 90.0 + 180) % 360 - 180) < 0.01,
+          f"hdg={p['hdg']:.4f}")
+    check("俯仰/滚转误差 < 0.01 度",
+          abs(p["pitch"] - 5.0) < 0.01 and abs(p["roll"] + 3.0) < 0.01)
+    check("ECEF 速度往返一致",
+          abs(p["v_n_ms"] - 50.0) < 1e-3 and abs(p["v_e_ms"] - 20.0) < 1e-3)
+    ang, ax, ay, az = quat_to_angle_axis(0.0, 0.0, 270.0, -10.0, 20.0)
+    h2, p2, r2 = angle_axis_to_euler(0.0, 0.0, ax, ay, az, ang)
+    check("角轴与欧拉互逆",
+          abs((h2 - 270.0 + 180) % 360 - 180) < 1e-6
+          and abs(p2 + 10.0) < 1e-6 and abs(r2 - 20.0) < 1e-6,
+          f"h={h2:.5f} p={p2:.5f} r={r2:.5f}")
+
+
+def test_fdm_roundtrip():
+    print("== FGNetFDM v24 roundtrip ==")
+    raw = encode_fdm(36.25, -115.25, 5500.0, 500.0, 180.0, -2.0, 1.5,
+                     95.0, -300.0, wow=1, when=1700000000)
+    check("帧长 408B", len(raw) == FG_NET_FDM_SIZE, f"len={len(raw)}")
+    f = parse_fdm(raw)
+    check("版本 24 解析成功", f is not None)
+    check("位置/高度往返",
+          abs(f["lat"] - 36.25) < 1e-7 and abs(f["alt_ft"] - 5500.0) < 1.0)
+    check("psi+90 约定：航向 180 往返",
+          abs((f["hdg"] - 180.0 + 180) % 360 - 180) < 0.01,
+          f"hdg={f['hdg']:.4f}")
+    check("wow=1", f["wow"] == 1)
+    line = b"CS:ABC|123.0,36.0,-115.0,1000,900,90,1,0,80,0,0"
+    t = parse_fdm(line)
+    check("文本行解析 + callsign",
+          t["callsign"] == "ABC" and t["lat"] == 36.0)
+
+
+
+def test_flag1(csv_path):
+    print("== flag1 判决 ==")
+    rows = load_rows(csv_path)
+    r = judge_flag1(rows, RULES["flag1"])
+    check("ILS 段满分 100", abs(r["total"] - 100.0) < 1e-6,
+          f"total={r['total']:.1f} approach={r['approach']:.0f} "
+          f"land={r['land']:.0f} touch={r['touch']:.0f}")
+    crash = [TrackRow(ts=r0.ts, lat=r0.lat, lon=r0.lon, alt_ft=50.0,
+                      agl_ft=-20.0, hdg=0, pitch=-15, roll=0, vcas_kt=80,
+                      vs_fps=-1200, wow=0) for r0 in rows[-40:]]
+    rc = judge_flag1(crash, RULES["flag1"])
+    check("无接地帧不给落地分", rc["land"] == 0.0, f"total={rc['total']:.0f}")
+
+
+def test_flag2(csv_path):
+    print("== flag2 判决 ==")
+    rows = load_rows(csv_path)
+    f2 = RULES["flag2"]
+    tgt = (f2["target_lat"], f2["target_lon"])
+    ok, ev = judge_flag2(rows, tgt, radius_m=f2["radius_m"],
+                         ceil_ft=f2["ceil_ft"], dur_s=f2["dur_s"],
+                         max_gap_s=f2["max_gap_s"],
+                         move_away_min_m=f2["move_away_min_m"])
+    check("穿过目标点触发", ok,
+          f"closest={ev['closest_m']} span={ev.get('best_span_s')}")
+    # 瞬移擦边：中段 3 秒悬停在目标点，前后都在 ~70km 外（轨迹空洞 = 瞬移）
+    fake, t0 = [], 2000.0
+    for i in range(30):
+        fake.append(TrackRow(t0 + i * 0.1, tgt[0] - 0.45 - i * 0.001,
+                             tgt[1] - 0.45, 5000, 4000, 0, 0, 0, 100, 0, 0))
+    for i in range(30):
+        fake.append(TrackRow(t0 + 3.0 + i * 0.1, tgt[0], tgt[1],
+                             5000, 4000, 0, 0, 0, 100, 0, 0))
+    for i in range(30):
+        fake.append(TrackRow(t0 + 6.0 + i * 0.1, tgt[0] + 0.45 + i * 0.001,
+                             tgt[1] + 0.45, 5000, 4000, 0, 0, 0, 100, 0, 0))
+    ok2, ev2 = judge_flag2(fake, tgt, radius_m=f2["radius_m"],
+                           ceil_ft=f2["ceil_ft"], dur_s=f2["dur_s"],
+                           max_gap_s=f2["max_gap_s"],
+                           move_away_min_m=f2["move_away_min_m"])
+    check("瞬移擦边不触发", not ok2, f"span={ev2.get('best_span_s')}")
+
+
+def test_flag3(csv_path):
+    print("== flag3 判决 ==")
+    rows = load_rows(csv_path)
+    r = judge_flag3(rows)
+    cps = r["checkpoints"]
+    check("飞天达成", cps["soar"]["ok"], f"dur={cps['soar']['duration_s']}s")
+    check("遁地达成", cps["dig"]["ok"], f"dur={cps['dig']['duration_s']}s")
+    check("超速达成", cps["speed"]["ok"], f"dur={cps['speed']['duration_s']}s")
+    check("满分 40", r["score"] == 40.0)
+    # 瞬移刷分：保持在 >100,000ft 但每帧水平跳变 ~55km
+    fake = [TrackRow(3000.0 + i * 0.1, 36.0 + (i % 2) * 0.5, -115.0,
+                     120000.0, 110000.0, 0, 0, 0, 100, 0, 0)
+            for i in range(300)]
+    r2 = judge_flag3(fake)
+    check("瞬移刷分被判不平滑", not r2["checkpoints"]["soar"]["ok"],
+          f"smooth={r2['checkpoints']['soar']['smooth']}")
+
+
+def main():
+    csv_path = REPO / "build" / "track.csv"
+    if not csv_path.exists():
+        print("[setup] 生成测试轨迹 ...")
+        # 顺序即比赛流程：先落地(flag1) → 绕场(flag2) → 物理不可能(flag3)
+        subprocess.run([sys.executable, "-m", "tools.gen_testdata",
+                        "--out", str(csv_path),
+                        "--segments", "walk,ils,arc,ceil,taxi,speed"],
+                       cwd=str(REPO), check=True)
+    test_mp_roundtrip()
+    test_fdm_roundtrip()
+    test_flag1(str(csv_path))
+    test_flag2(str(csv_path))
+    test_flag3(str(csv_path))
+    print()
+    if FAILURES:
+        print(f"共 {len(FAILURES)} 项失败：{FAILURES}")
+        sys.exit(1)
+    print("全部通过 OK")
+
+
+if __name__ == "__main__":
+    main()
