@@ -13,7 +13,7 @@ bool Config::load(const std::string& path) {
     scenery_dir = get_json_string(content, "scenery_dir");
     lock_file = get_json_string(content, "lock_file");
     server_ip = get_json_string(content, "server_ip");
-    server_port = get_json_int(content, "server_port", 5000);
+    server_port = get_json_int(content, "server_port", 5001);
     telnet_host = get_json_string(content, "telnet_host");
     telnet_port = get_json_int(content, "telnet_port", 5401);
     enable_logging = get_json_bool(content, "enable_logging", true);

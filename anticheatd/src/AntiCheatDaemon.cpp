@@ -237,12 +237,9 @@ void AntiCheatDaemon::heartbeat_loop(const std::string& userid) {
 
     sockaddr_in server{};
     server.sin_family = AF_INET;
-    server.sin_port = htons(static_cast<u_short>(5001));
+    server.sin_port = htons(static_cast<u_short>(cfg_.server_port));
     inet_pton(AF_INET, cfg_.server_ip.c_str(), &server.sin_addr);
 
-    // Obfuscate server IP check
-    volatile int port = 5001;
-    OBF_UNUSED(port);
     JUNK_MATH();
 
     while (running_) {

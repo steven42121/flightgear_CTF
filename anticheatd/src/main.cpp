@@ -34,6 +34,7 @@ void print_usage(const char* prog) {
               << "  --lock-file <path>       env.lock file path\n"
               << "  --telnet-host <host>     FG telnet host (default: 127.0.0.1)\n"
               << "  --telnet-port <port>     FG telnet port (default: 5401)\n"
+              << "  --server <host:port>     Anticheat server address (default: 127.0.0.1:5000)\n"
               << "  --help                   Show this help\n";
 }
 
@@ -70,6 +71,15 @@ int main(int argc, char* argv[]) {
             cfg.telnet_host = argv[++i];
         } else if (arg == "--telnet-port" && i + 1 < argc) {
             cfg.telnet_port = std::stoi(argv[++i]);
+        } else if (arg == "--server" && i + 1 < argc) {
+            std::string spec = argv[++i];
+            auto colon = spec.rfind(':');
+            if (colon != std::string::npos) {
+                cfg.server_ip = spec.substr(0, colon);
+                cfg.server_port = std::stoi(spec.substr(colon + 1));
+            } else {
+                cfg.server_ip = spec;
+            }
         } else {
             args.push_back(arg);
         }
@@ -86,8 +96,27 @@ int main(int argc, char* argv[]) {
     if (cfg.fg_bin_dir.empty())    cfg.fg_bin_dir    = fg.bin_dir;
     if (cfg.scenery_dir.empty())   cfg.scenery_dir   = fg.scenery_dir;
     if (cfg.lock_file.empty()) {
-        // Default: look for env.lock next to the anticheatd binary
-        cfg.lock_file = (fs::path(argv[0]).parent_path() / "env.lock").string();
+        // Search for env.lock in multiple locations:
+        // 1) next to the binary
+        // 2) up to 5 levels above binary (for PyInstaller _MEIPASS deep trees)
+        // 3) current working directory
+        fs::path binary_dir = fs::path(argv[0]).parent_path();
+        for (int up = 0; up <= 5; ++up) {
+            fs::path candidate = binary_dir / "env.lock";
+            std::error_code ec;
+            if (fs::exists(candidate, ec)) {
+                cfg.lock_file = candidate.string();
+                break;
+            }
+            binary_dir = binary_dir.parent_path();
+        }
+        if (cfg.lock_file.empty()) {
+            if (fs::exists("env.lock")) {
+                cfg.lock_file = "env.lock";
+            } else {
+                cfg.lock_file = (fs::path(argv[0]).parent_path() / "env.lock").string();
+            }
+        }
     }
 
     try {

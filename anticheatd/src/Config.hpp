@@ -16,7 +16,7 @@ public:
     
     // Network
     std::string server_ip = "127.0.0.1";
-    int server_port = 5000;
+    int server_port = 5001;
     
     // Telnet
     std::string telnet_host = "127.0.0.1";

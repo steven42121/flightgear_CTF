@@ -55,6 +55,18 @@ class AntiCheatGUI:
         self.session_label.pack(fill="x", padx=5, pady=3)
         self.time_label = tk.Label(info_frame, text="Time: ---", font=("Consolas", 9), fg="#888", bg="#16213e", anchor="w")
         self.time_label.pack(fill="x", padx=5, pady=0)
+
+        tk.Frame(self.root, height=2, bg="#333").pack(fill="x", pady=8)
+        server_frame = tk.Frame(self.root, bg="#16213e", relief="solid", bd=1)
+        server_frame.pack(fill="x", padx=15, pady=5)
+        tk.Label(server_frame, text="SERVER", font=("Microsoft YaHei UI", 9, "bold"), fg="#888", bg="#16213e").pack(anchor="w", padx=5, pady=5)
+        srv_row = tk.Frame(server_frame, bg="#16213e")
+        srv_row.pack(fill="x", padx=5, pady=3)
+        tk.Label(srv_row, text="Address:", font=("Microsoft YaHei UI", 9), fg="#aaa", bg="#16213e").pack(side="left")
+        self.server_entry = tk.Entry(srv_row, font=("Consolas", 10), bg="#0d1117", fg="#0af", insertbackground="#0af",
+                                     relief="solid", bd=0, width=24)
+        self.server_entry.pack(side="left", padx=5)
+        self.server_entry.insert(0, "127.0.0.1:5001")
         tk.Frame(self.root, height=2, bg="#333").pack(fill="x", pady=8)
         btn_frame = tk.Frame(self.root, bg="#1a1a2e")
         btn_frame.pack(fill="x", padx=15, pady=5)
@@ -99,26 +111,39 @@ class AntiCheatGUI:
 
     def _run_check(self):
         self.btn_check.config(state="disabled")
-        self._log("Running anticheatd.exe --json ...")
+        server = self.server_entry.get().strip()
+        self._log(f"Running anticheatd.exe --json (server: {server})...")
         for k in self.layer_labels:
             self.layer_labels[k].config(text="...", fg="#fa0")
         def _do():
             try:
-                cmd = [str(self.exe_path), "--mode", "selfcheck", "--json"]
+                lock_path = str(self.repo_root / "env.lock")
+                cmd = [str(self.exe_path), "--mode", "selfcheck", "--json", "--lock-file", lock_path]
+                if server:
+                    cmd += ["--server", server]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                output = r.stdout + r.stderr
-                self._log(output.strip())
-                try:
-                    s = output.find('{')
-                    e = output.rfind('}') + 1
-                    if s >= 0 and e > s:
-                        jd = json.loads(output[s:e])
-                        self._update_display(jd)
-                        self._log(f"Display: {jd.get('passed',0)}/{jd.get('total',0)} checks")
-                    else:
-                        self._log("No JSON found")
-                except json.JSONDecodeError as ex:
-                    self._log(f"Parse error: {ex}")
+                stdout = r.stdout.strip()
+                stderr = r.stderr.strip()
+                if stderr:
+                    self._log(stderr)
+                if stdout:
+                    self._log("(stdout omitted, see dashboard)")
+                # Try parsing stdout first, then combined
+                jd = None
+                for src in (stdout, stdout + "\n" + stderr):
+                    try:
+                        s = src.find('{')
+                        e = src.rfind('}') + 1
+                        if s >= 0 and e > s:
+                            jd = json.loads(src[s:e])
+                            break
+                    except json.JSONDecodeError:
+                        continue
+                if jd:
+                    self._update_display(jd)
+                    self._log(f"Display: {jd.get('passed',0)}/{jd.get('total',0)} passed")
+                else:
+                    self._log("Parse error: no valid JSON found")
             except Exception as ex:
                 self._log(f"Error: {ex}")
             finally:
@@ -127,10 +152,13 @@ class AntiCheatGUI:
 
     def _open_session(self):
         self.btn_session.config(state="disabled")
-        self._log("Opening session...")
+        server = self.server_entry.get().strip()
+        self._log(f"Opening session (server: {server})...")
         def _do():
             try:
                 cmd = [str(self.exe_path), "--mode", "session", "--userid", "GUEST", "--json"]
+                if server:
+                    cmd += ["--server", server]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 output = r.stdout + r.stderr
                 self._log(output.strip())
