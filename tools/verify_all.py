@@ -94,27 +94,39 @@ def test_fdm_roundtrip():
 def test_flag1(csv_path):
     print("== flag1 判决 (新格式：到达目标点) ==")
     rows = load_rows(csv_path)
-    # 使用上科大坐标
+    # 测试轨迹里 ils 段落在 (36.15, -115.15) 机场上，故用该点当目标点自验判决链路。
+    # 正式比赛用 rules.yaml 里的上科大坐标。
     cfg = {
-        "target_lat": 31.1770,
-        "target_lon": 121.5960,
+        "target_lat": 36.15,
+        "target_lon": -115.15,
         "radius_m": 500.0,
-        "ceil_ft": 1000.0,
+        "ceil_ft": 2000.0,   # 测试轨迹接地高度为 2000ft，故放宽（真实 ZSPD 用 rules.yaml 的 1000ft）
         "dur_s": 5.0,
-        "userid": "TEST01"
+        "userid": "TEST01",
     }
     r = judge_flag1(rows, cfg)
     check("返回 total 字段", "total" in r, f"keys={list(r.keys())}")
     check("返回 reached 字段", "reached" in r)
     check("返回 evidence 字段", "evidence" in r)
+    check("到达目标点并给满分",
+          r["reached"] and r["total"] == 100.0,
+          f"closest={r['evidence'].get('closest_m')}m "
+          f"stay={r['evidence'].get('max_stay_s')}s")
+
+    # 反例：目标点挪到 20nm 外，必须判不到
+    far = dict(cfg, target_lat=36.15 + 20.0 / 60.0)
+    rf = judge_flag1(rows, far)
+    check("远离目标点不给分", not rf["reached"] and rf["total"] == 0.0,
+          f"closest={rf['evidence'].get('closest_m')}m")
 
 
 def test_flag2(csv_path):
     print("== flag2 判决 (新格式：物理不可能状态) ==")
     rows = load_rows(csv_path)
     f2cfg = dict(RULES["flag2"])
-    # 测试环境模拟：注入有效心跳（最后一行时间戳 = 心跳时间戳）
-    f2cfg["hb_last_ts"] = rows[-1].ts if rows else 0.0
+    # 测试环境模拟：注入有效心跳（当前时间，确保在 grace 窗口内）
+    import time as _time
+    f2cfg["hb_last_ts"] = _time.time()
     f2cfg["hb_grace_s"] = RULES["session"]["grace_missed"]
     r2 = judge_flag2(rows, f2cfg)
     check("返回 total 字段", "total" in r2)
@@ -134,14 +146,14 @@ def test_flag3(csv_path):
 
 
 def main():
+    # 每次自验都重新生成，避免复用旧段集合（例如缺 ceil/taxi/speed）的陈旧 CSV。
     csv_path = REPO / "build" / "track.csv"
-    if not csv_path.exists():
-        print("[setup] 生成测试轨迹 ...")
-        # 顺序即比赛流程：先落地(flag1) → 绕场(flag2) → 物理不可能(flag3)
-        subprocess.run([sys.executable, "-m", "tools.gen_testdata",
-                        "--out", str(csv_path),
-                        "--segments", "walk,ils,arc,ceil,taxi,speed"],
-                       cwd=str(REPO), check=True)
+    print("[setup] 生成测试轨迹 ...")
+    # 顺序即比赛流程：热身平飞 → 绕场(flag2) → ILS 落地(flag1) → 物理不可能(flag3)
+    subprocess.run([sys.executable, "-m", "tools.gen_testdata",
+                    "--out", str(csv_path),
+                    "--segments", "walk,ils,arc,ceil,taxi,speed"],
+                   cwd=str(REPO), check=True)
     test_mp_roundtrip()
     test_fdm_roundtrip()
     test_flag1(str(csv_path))

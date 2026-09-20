@@ -32,9 +32,14 @@ from server import hb_auth               # noqa: E402
 
 def row_from_mp(pkt):
     """MP 包 → TrackRow。
-    注意：MP 包无 AGL/wow，正式部署时 AGL 应查 scenery 高程、wow 由
-    generic 遥测补齐；这里用固定差值占位以便开发联调。"""
-    return TrackRow(ts=pkt["recv_time"], lat=pkt["lat"], lon=pkt["lon"],
+
+    ts 用包内自带的仿真时间（接收端补的 recv_time 只在时钟不可信时兜底）：
+    判决器按 ts 算“停留时长/持续秒数”，若逐包写服务端收包时刻，
+    合法轨迹也会被判成拖了整场，且重放时无法复现。
+    ⚠ 正式部署时 AGL 应查 scenery 高程、wow 由 generic 遥测补齐；
+    这里用固定差值占位以便开发联调。
+    """
+    return TrackRow(ts=pkt.get("ts") or pkt["recv_time"], lat=pkt["lat"], lon=pkt["lon"],
                     alt_ft=pkt["alt_ft"], agl_ft=pkt["alt_ft"] - 5000.0,
                     hdg=pkt["hdg"], pitch=pkt["pitch"], roll=pkt["roll"],
                     vcas_kt=pkt["gs_kt"], vs_fps=pkt["vs_fps"], wow=0)

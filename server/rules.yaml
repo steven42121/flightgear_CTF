@@ -9,7 +9,7 @@ mp:
 session:
   close_idle_s: 30     # 会话空闲多久后判定收口
   heartbeat_hz: 1
-  grace_missed: 5
+  grace_missed: 10
 
 flag1:
   # 上海浦东机场 ZSPD → 上科大张江校区

@@ -28,9 +28,9 @@ AntiCheatDaemon::AntiCheatDaemon(const Config& cfg)
     : cfg_(cfg),
       l0_(std::make_unique<L0_ArgValidation>()),
       l1_(std::make_unique<L1_Integrity>(cfg_.lock_file)),
-      l2_(nullptr),
-      l3_(nullptr),
-      l4_(nullptr),
+      l2_(std::make_unique<L2_PropertyAudit>(cfg_.telnet_host, cfg_.telnet_port)),
+      l3_(std::make_unique<L3_FDMSourceTracker>()),
+      l4_(std::make_unique<L4_ProcessIntegrity>()),
       vm_(std::make_unique<VMDetector>()),
       session_mgr_(nullptr) {
 
@@ -65,11 +65,10 @@ int AntiCheatDaemon::run(DaemonMode mode, const std::vector<std::string>& args,
     results.push_back(check_L0(args));
     results.push_back(check_L1());
     results.push_back(check_VM());
-
-    if (mode == DaemonMode::DAEMON) {
-        results.push_back(check_L2());
-        results.push_back(check_L4());
-    }
+    results.push_back(check_L2());
+    results.push_back(check_L3());
+    results.push_back(check_L4());
+    results.push_back(check_L5());
 
     // Store results for JSON output
     last_results_ = results;
@@ -197,8 +196,51 @@ CheckResult AntiCheatDaemon::check_VM() {
 CheckResult AntiCheatDaemon::check_L2() {
     CheckResult result;
     result.layer = "L2";
+
+    // Test telnet connectivity first
+    std::string test = l2_->read_property("/sim/version");
+    if (test.empty()) {
+        result.passed = false;
+        result.detail = OBFSTR("Property audit: cannot connect to FG telnet (127.0.0.1:5401). Is FG running with --telnet=5401?");
+        return result;
+    }
+
+    // Read FG Instance UUID (Layer 1: FG identity binding)
+    fg_uuid_ = l2_->read_property("/sim/ctf/instance-uuid");
+    if (fg_uuid_.empty()) {
+        result.passed = false;
+        result.detail = OBFSTR("Property audit: CTF addon not loaded (no /sim/ctf/instance-uuid). Start FG with --addon=.../ctf-addon");
+        return result;
+    }
+
+    // Read state for cross-verification (Layer 2: state digest)
+    std::string lat_s = l2_->read_property("/position/latitude-deg");
+    std::string lon_s = l2_->read_property("/position/longitude-deg");
+    std::string alt_s = l2_->read_property("/position/altitude-ft");
+    std::string ias_s = l2_->read_property("/velocities/airspeed-kt");
+    std::string hdg_s = l2_->read_property("/orientation/heading-deg");
+
+    if (lat_s.empty() || lon_s.empty()) {
+        result.passed = false;
+        result.detail = OBFSTR("Property audit: cannot read FG position (flight not loaded?)");
+        return result;
+    }
+
+    // Compute state digest for heartbeat v2
+    std::string state_raw = lat_s + "|" + lon_s + "|" + alt_s + "|" + ias_s + "|" + hdg_s;
+    state_digest_ = sha256(state_raw);
+
     result.passed = true;
-    result.detail = OBFSTR("Property audit (placeholder)");
+    result.detail = OBFSTR("Property audit: FG connected (UUID=")
+                  + fg_uuid_.substr(0, 13) + OBFSTR("...)");
+    return result;
+}
+
+CheckResult AntiCheatDaemon::check_L3() {
+    CheckResult result;
+    result.layer = "L3";
+    result.passed = true;
+    result.detail = OBFSTR("FDM source tracker (placeholder)");
     JUNK_MATH();
     return result;
 }
@@ -209,6 +251,62 @@ CheckResult AntiCheatDaemon::check_L4() {
     result.passed = true;
     result.detail = OBFSTR("Process integrity (placeholder)");
     JUNK_MATH();
+    return result;
+}
+
+CheckResult AntiCheatDaemon::check_L5() {
+    CheckResult result;
+    result.layer = "L5";
+
+    // Ensure Winsock is initialized on Windows
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        result.passed = false;
+        result.detail = OBFSTR("Heartbeat: cannot create socket");
+        WSACleanup();
+        return result;
+    }
+
+    sockaddr_in server{};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(static_cast<u_short>(cfg_.server_port));
+    inet_pton(AF_INET, cfg_.server_ip.c_str(), &server.sin_addr);
+
+    const char* ping = "PING";
+    sendto(sock, ping, static_cast<int>(strlen(ping)), 0,
+           reinterpret_cast<sockaddr*>(&server), sizeof(server));
+
+    // Set 2s timeout for PONG
+    timeval tv{};
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+
+    char buf[256]{};
+    sockaddr_in from{};
+    int fromlen = sizeof(from);
+    int n = recvfrom(sock, buf, sizeof(buf) - 1, 0,
+                     reinterpret_cast<sockaddr*>(&from), &fromlen);
+
+    closesocket(sock);
+    WSACleanup();
+
+    if (n > 0) {
+        buf[n] = '\0';
+        std::string resp(buf);
+        if (resp.find("PONG") != std::string::npos) {
+            result.passed = true;
+            result.detail = OBFSTR("Heartbeat server reachable");
+            return result;
+        }
+    }
+
+    result.passed = false;
+    result.detail = OBFSTR("Heartbeat: server unreachable (") + cfg_.server_ip + ":" +
+                    std::to_string(cfg_.server_port) + ")";
     return result;
 }
 
@@ -225,7 +323,6 @@ void AntiCheatDaemon::heartbeat_loop(const std::string& userid) {
     GUARD_BLOCK();
     JUNK_MATH();
 
-    // Create ticket engine
     auto ticket = std::make_unique<HeartbeatTicket>(userid);
 
     // UDP socket to server
@@ -235,21 +332,67 @@ void AntiCheatDaemon::heartbeat_loop(const std::string& userid) {
         return;
     }
 
+    // Set non-blocking for challenge recv
+    u_long mode = 1;
+    ioctlsocket(sock, FIONBIO, &mode);
+
     sockaddr_in server{};
     server.sin_family = AF_INET;
     server.sin_port = htons(static_cast<u_short>(cfg_.server_port));
     inet_pton(AF_INET, cfg_.server_ip.c_str(), &server.sin_addr);
 
+    // L2 telnet reader for per-tick state refresh
+    L2_PropertyAudit fg_reader(cfg_.telnet_host, cfg_.telnet_port);
+
     JUNK_MATH();
 
     while (running_) {
         if (anti_debug::debugger_present()) {
-            // Debugger detected mid-flight → stop heartbeat
             closesocket(sock);
             JUNK_MATH();
             return;
         }
 
+        // === Challenge receiver (non-blocking) ===
+        {
+            char challenge_buf[256]{};
+            sockaddr_in from{};
+            int fromlen = sizeof(from);
+            int n = recvfrom(sock, challenge_buf, sizeof(challenge_buf) - 1, 0,
+                             reinterpret_cast<sockaddr*>(&from), &fromlen);
+            if (n > 0) {
+                challenge_buf[n] = '\0';
+                std::string raw(challenge_buf);
+                // Server sends: CHALLENGE:<hex>
+                if (raw.rfind("CHALLENGE:", 0) == 0) {
+                    std::lock_guard<std::mutex> lock(challenge_mutex_);
+                    last_challenge_ = raw.substr(10);
+                }
+            }
+        }
+
+        // === Refresh FG state digest each tick ===
+        {
+            std::string lat_s = fg_reader.read_property("/position/latitude-deg");
+            std::string lon_s = fg_reader.read_property("/position/longitude-deg");
+            std::string alt_s = fg_reader.read_property("/position/altitude-ft");
+            std::string ias_s = fg_reader.read_property("/velocities/airspeed-kt");
+            std::string hdg_s = fg_reader.read_property("/orientation/heading-deg");
+            if (!lat_s.empty() && !lon_s.empty()) {
+                std::string raw = lat_s + "|" + lon_s + "|" + alt_s + "|" + ias_s + "|" + hdg_s;
+                state_digest_ = sha256(raw);
+            }
+        }
+
+        // === Set v2 fields ===
+        ticket->set_fg_uuid(fg_uuid_);
+        ticket->set_state_digest(state_digest_);
+        {
+            std::lock_guard<std::mutex> lock(challenge_mutex_);
+            ticket->set_last_challenge(last_challenge_);
+        }
+
+        // === Sign & send ===
         std::string ticket_json = ticket->sign();
         sendto(sock, ticket_json.c_str(), static_cast<int>(ticket_json.size()),
                0, reinterpret_cast<sockaddr*>(&server), sizeof(server));

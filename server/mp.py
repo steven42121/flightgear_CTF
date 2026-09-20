@@ -119,6 +119,7 @@ def parse_position(buf, recv_time=None):
         hdg, pitch, roll = 0.0, 0.0, 0.0
     return {
         "hdr": hdr, "model": model, "time": ts, "lag": lag,
+        "ts": ts,   # 仿真时间：trackdb 落库用（recv_time 只是收包时刻）
         "lat": lat, "lon": lon, "alt_ft": alt_m / 0.3048,
         "hdg": hdg, "pitch": pitch, "roll": roll,
         "v_n_ms": vn, "v_e_ms": ve, "v_d_ms": vd,

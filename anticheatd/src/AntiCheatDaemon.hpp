@@ -79,7 +79,9 @@ private:
     CheckResult check_L1();
     CheckResult check_VM();
     CheckResult check_L2();
+    CheckResult check_L3();
     CheckResult check_L4();
+    CheckResult check_L5(/* server connected? */);
 
     // Heartbeat
     void start_heartbeat(const std::string& userid);
@@ -103,4 +105,10 @@ private:
     std::string session_id_;
     std::vector<CheckResult> last_results_;  // Stored for JSON output
     bool json_mode_ = false;                  // Suppress text report when true
+
+    // Heartbeat v2 bindings
+    std::string fg_uuid_;                     // From /sim/ctf/instance-uuid
+    std::string state_digest_;                // SHA256(lat‖lon‖alt‖ias‖hdg)
+    std::string last_challenge_;              // Latest server challenge
+    std::mutex challenge_mutex_;
 };

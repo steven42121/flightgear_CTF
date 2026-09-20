@@ -28,20 +28,15 @@ def judge_session(db: TrackDB, sid, rules, heartbeats=None):
     hb_grace = rules["session"].get("grace_missed", 5)
 
     # 计算心跳有效性（flag1、flag2 共用）
-    last_row_ts = db.last_ts(sid)
-    heartbeat_ok = (hb_ts > 0 and (last_row_ts - hb_ts) <= hb_grace)
+    # 使用当前时间作为基准，确保心跳"新鲜"
+    heartbeat_ok = (hb_ts > 0 and (time.time() - hb_ts) <= hb_grace)
 
-    # Flag1: 到达上科大目标点 —— 有心跳门控
+    # Flag1: 到达目标点 —— 判决照做，是否发 flag 由下面统一的门控决定
     f1cfg = rules["flag1"]
     f1cfg["userid"] = uid  # 注入用户ID用于生成唯一key
     r1 = judge_flag1(rows, f1cfg)
     r1["heartbeat_ok"] = heartbeat_ok
     out["results"]["flag1"] = r1
-
-    if r1.get("reached") and heartbeat_ok:
-        out["flag1"] = scores.issue_flag(uid, 1)
-        out["atc_audio"] = r1.get("atc_audio")
-        out["flag1_hint"] = r1.get("evidence", {}).get("flag_key_hint")
 
     # Flag2: 物理不可能状态 —— 有心跳门控
     f2cfg = dict(rules["flag2"])
@@ -49,6 +44,19 @@ def judge_session(db: TrackDB, sid, rules, heartbeats=None):
     f2cfg["hb_grace_s"] = hb_grace
     r2 = judge_flag2(rows, f2cfg)
     out["results"]["flag2"] = r2
+
+    # ── 防护总闸：已踢出会话不发 flag（判决明细仍回传，便于裁判复盘） ──
+    from server import protection
+    ok, reason = protection.check_session(uid)
+    out["protection"] = {"ok": ok, "reason": reason}
+    if not ok:
+        print(f"[verdict] Session blocked: {uid} - {reason}")
+        return out
+
+    if r1.get("reached") and heartbeat_ok:
+        out["flag1"] = scores.issue_flag(uid, 1)
+        out["atc_audio"] = r1.get("atc_audio")
+        out["flag1_hint"] = r1.get("evidence", {}).get("flag_key_hint")
 
     if r2.get("heartbeat_ok") and r2.get("total", 0) > 0:
         out["flag2"] = scores.issue_flag(uid, 2)

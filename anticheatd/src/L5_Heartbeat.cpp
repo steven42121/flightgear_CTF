@@ -1,10 +1,13 @@
-﻿/**
- * L5: HMAC heartbeat with obfuscated key.
+﻿﻿/**
+ * L5: HMAC heartbeat with obfuscated key — v2 format.
  *
- * K → compiled as 8 XOR'd uint32_t fragments (see hb_secret.cpp).
- * ticket = HMAC-SHA256(K, "seq|callsign|ts") → 64 hex chars.
+ * v2 adds four anti-two-machine-attack layers:
+ *   1) fg_uuid      — FG instance identity cross-check
+ *   2) state_digest  — SHA256(lat|lon|alt|ias|hdg) cross-check
+ *   3) last_challenge — challenge-response anti-replay
+ *   4) prev_mac     — hash chain (cannot skip frames)
  *
- * Server verifies: HMAC correct + seq monotonically increasing.
+ * ticket = HMAC-SHA256(K, "v2|callsign|seq|ts|fg_uuid|state_digest|last_challenge|prev_mac|nonce")
  */
 #include "L5_Heartbeat.hpp"
 #include "Logger.hpp"
@@ -12,6 +15,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <random>
 
 // ═══════════════════════════════════════════════════════════════════
 // CONSTRUCTOR
@@ -21,6 +25,17 @@ HeartbeatTicket::HeartbeatTicket(const std::string& callsign,
                                  const std::string& /*unused*/)
     : callsign_(callsign), seq_(0), last_ok_ms_(now_ms()) {
     JUNK_MATH();
+
+    // Generate random nonce for hash chain seed
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    std::ostringstream ns;
+    ns << std::hex << std::setfill('0') << std::setw(16) << dist(gen);
+    nonce_ = ns.str();
+    prev_mac_ = nonce_;
+
+    JUNK_MATH();
 }
 
 HeartbeatTicket::~HeartbeatTicket() {
@@ -28,7 +43,23 @@ HeartbeatTicket::~HeartbeatTicket() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TICKET SIGNING
+// SETTERS
+// ═══════════════════════════════════════════════════════════════════
+
+void HeartbeatTicket::set_fg_uuid(const std::string& uuid) {
+    fg_uuid_ = uuid;
+}
+
+void HeartbeatTicket::set_state_digest(const std::string& digest) {
+    state_digest_ = digest;
+}
+
+void HeartbeatTicket::set_last_challenge(const std::string& challenge) {
+    last_challenge_ = challenge;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TICKET SIGNING (v2)
 // ═══════════════════════════════════════════════════════════════════
 
 std::string HeartbeatTicket::sign() {
@@ -38,26 +69,39 @@ std::string HeartbeatTicket::sign() {
     uint8_t key[32];
     g_secret_key.assemble(key);
 
-    // 2) Build message
+    // 2) Build canonical message for HMAC
     std::ostringstream msg;
-    msg << seq_ << '|' << callsign_ << '|' << std::fixed << std::setprecision(3)
-        << static_cast<double>(now_ms()) / 1000.0;
+    msg << "v2|" << callsign_ << '|' << seq_ << '|'
+        << std::fixed << std::setprecision(3)
+        << static_cast<double>(now_ms()) / 1000.0 << '|'
+        << fg_uuid_ << '|'
+        << state_digest_ << '|'
+        << last_challenge_ << '|'
+        << prev_mac_ << '|'
+        << nonce_;
     std::string msg_str = msg.str();
 
-    // 3) HMAC-SHA256(key, msg)
+    // 3) HMAC-SHA256(key, msg) = ticket
     std::string ticket = ::hmac_sha256(
         std::string(reinterpret_cast<char*>(key), 32), msg_str);
 
-    // 4) Zero the key stack copy
+    // 4) Save this ticket as prev_mac for hash chain
+    prev_mac_ = ticket;
+
+    // 5) Zero the key stack copy
     ObfuscatedKey::zero(key);
 
-    // 5) Build JSON output
+    // 6) Build JSON v2 output
     std::ostringstream json;
-    json << "{\"" << OBFSTR("callsign") << "\":\"" << callsign_ << "\","
-         << "\"" << OBFSTR("seq") << "\":" << seq_ << ","
-         << "\"" << OBFSTR("ts") << "\":" << std::fixed << std::setprecision(3)
-         << static_cast<double>(now_ms()) / 1000.0 << ","
-         << "\"" << OBFSTR("ticket") << "\":\"" << ticket << "\"}";
+    json << "{\"v\":2"
+         << ",\"" << OBFSTR("callsign") << "\":\"" << callsign_ << "\""
+         << ",\"" << OBFSTR("seq") << "\":" << seq_
+         << ",\"" << OBFSTR("ts") << "\":" << std::fixed << std::setprecision(3)
+         << static_cast<double>(now_ms()) / 1000.0
+         << ",\"" << OBFSTR("fg_uuid") << "\":\"" << fg_uuid_ << "\""
+         << ",\"" << OBFSTR("state_digest") << "\":\"" << state_digest_ << "\""
+         << ",\"" << OBFSTR("last_challenge") << "\":\"" << last_challenge_ << "\""
+         << ",\"" << OBFSTR("ticket") << "\":\"" << ticket << "\"}";
 
     seq_++;
     last_ok_ms_ = now_ms();
@@ -74,7 +118,6 @@ bool HeartbeatTicket::check_liveness() {
     long long now = now_ms();
     long long delta = now - last_ok_ms_;
 
-    // Miss threshold: 5000ms
     if (delta > 5000) {
         missed_++;
         JUNK_MATH();

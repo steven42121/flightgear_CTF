@@ -14,6 +14,7 @@
 var CTF_MODE_PROP = "/ctf/mode";            # training | competitive
 var CTF_STATUS_PROP = "/ctf/status";        # ok | suspect | banned
 var CTF_TEL_CFG = "/ctf/telemetry/enabled"; # 遥测开关（正式模式必须开）
+var CTF_UUID_PROP = "/sim/ctf/instance-uuid";  # FG instance identity
 
 # 判决服务器的遥测出口（--generic 参数由 launcher.sh 带上，见 launcher）
 var DEFAULT_TEL_HOST = "127.0.0.1";
@@ -53,10 +54,26 @@ var bridge_props = func {
           nav.getNode("gs-needle-deflection-norm", 1).getValue());
 };
 
+# ---------------- FG Instance UUID ---------------- 
+# 生成一次性随机 UUID，绑定到 /sim/ctf/instance-uuid。
+# 反作弊通过 telnet 读它签进心跳，服务端通过遥测和心跳交叉比对，
+# 防止"两台机子各跑一半"攻击。
+var _gen_uuid = func {
+  var chars = "0123456789abcdef";
+  var uuid = "";
+  for (var i = 0; i < 32; i += 1) {
+    uuid ~= chr(chars, rand() % 16);
+    if (i == 7 or i == 11 or i == 15 or i == 19) { uuid ~= "-"; }
+  }
+  setprop(CTF_UUID_PROP, uuid);
+  print("[CTF] Instance UUID: ", uuid);
+};
+
 # ---------------- 启动入口 ----------------
 var main = func(addonGhost) {
   print("[CTF] MAYDAY addon loaded. mode=",
         getprop(CTF_MODE_PROP) or "training");
+  _gen_uuid();
   var mode = getprop(CTF_MODE_PROP) or "training";
   apply_mode(mode);
   # 每 0.5s 刷新一次证据节点

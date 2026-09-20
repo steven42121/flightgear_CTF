@@ -2,20 +2,17 @@
 #include <string>
 #include <cstdint>
 
-/**
- * L5: 1Hz HMAC heartbeat ticket (obfuscated key).
- *
- * K = 32B secret shared with server (XOR'd into 8 fragments).
- * ticket = HMAC-SHA256(K, "seq|callsign|ts")
- *
- * Server verifies: HMAC correct + seq strictly increasing.
- */
 class HeartbeatTicket {
 public:
     HeartbeatTicket(const std::string& callsign, const std::string& /*reserved*/ = "");
     ~HeartbeatTicket();
 
     std::string sign();
+
+    void set_fg_uuid(const std::string& uuid);
+    void set_state_digest(const std::string& digest);
+    void set_last_challenge(const std::string& challenge);
+
     bool check_liveness();
 
     int seq() const;
@@ -29,4 +26,13 @@ private:
     int seq_;
     int missed_ = 0;
     long long last_ok_ms_;
+
+    // v2 fields — set by daemon before each sign()
+    std::string fg_uuid_;
+    std::string state_digest_;
+    std::string last_challenge_;
+
+    // Hash chain
+    std::string prev_mac_;
+    std::string nonce_;
 };

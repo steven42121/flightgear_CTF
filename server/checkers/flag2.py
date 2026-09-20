@@ -8,6 +8,7 @@
 # 要求状态连续平滑（防瞬移刷分）
 
 import math
+import time
 from typing import List, Dict
 from .. import geodesy
 
@@ -63,12 +64,12 @@ def judge_flag2(rows: List, cfg: Dict) -> Dict:
         return out
 
     # --- 心跳门控：必须全程有心跳 ---
-    last_row_ts = rows[-1].ts
-    hb_ok = (hb_last_ts > 0) and (last_row_ts - hb_last_ts <= hb_grace_s)
+    # 使用当前时间作为基准，确保心跳"新鲜"
+    hb_ok = (hb_last_ts > 0 and (time.time() - hb_last_ts) <= hb_grace_s)
     out['heartbeat_ok'] = hb_ok
     out['evidence']['hb_last_ts'] = hb_last_ts
     out['evidence']['hb_grace_s'] = hb_grace_s
-    out['evidence']['last_row_ts'] = last_row_ts
+    out['evidence']['now_ts'] = time.time()
 
     if not hb_ok:
         out['verdict'] = 'FAIL (no heartbeat)'

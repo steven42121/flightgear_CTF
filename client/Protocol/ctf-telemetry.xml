@@ -8,7 +8,7 @@
   --generic=socket,out,30,127.0.0.1,5510,udp,ctf-telemetry
 
   二进制帧格式（parser.py --format csv 同款，逗号分隔）：
-  ts,lat,lon,alt_ft,agl_ft,heading,pitch,roll,vcas,vs_fps,wow
+  ts,lat,lon,alt_ft,agl_ft,heading,pitch,roll,vcas,vs_fps,wow,instance_uuid
 -->
 <PropertyList>
   <generic>
@@ -91,6 +91,13 @@
         <type>int</type>
         <node>/ctf/evidence/wow</node>
         <format>%d</format>
+      </chunk>
+
+      <chunk>
+        <name>instance uuid</name>
+        <type>string</type>
+        <node>/sim/ctf/instance-uuid</node>
+        <format>%s</format>
       </chunk>
     </output>
   </generic>
